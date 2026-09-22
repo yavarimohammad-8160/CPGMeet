@@ -1,0 +1,3 @@
+/api/*  https://cpgmeet-server.onrender.com/api/:splat  200
+/socket.io/*  https://cpgmeet-server.onrender.com/socket.io/:splat  200
+/*  /index.html  200
