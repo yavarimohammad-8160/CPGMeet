@@ -1,0 +1,5 @@
+[CPGMeet] API http://0.0.0.0:8788
+[CPGMeet] DB D:\Projects\cpgmeet\data\cpgmeet.db
+[CPGMeet] CPGChat http://127.0.0.1:8787
+[CPGMeet] JWT_SECRET set=true (default shared with CPGChat)
+[CPGMeet] CPGCHAT_NOTIFY_URL unset (phase2 stub ready)
