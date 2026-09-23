@@ -1,6 +1,19 @@
 import jwt from "jsonwebtoken";
 
-const SECRET = process.env.JWT_SECRET || "cpgchat-pilot-change-me";
+const SECRET = process.env.JWT_SECRET || "cpgmeet-pilot-change-me";
+
+export function signToken(user) {
+  return jwt.sign(
+    {
+      id: Number(user.id),
+      email: String(user.email || ""),
+      role: String(user.role || "user"),
+      name: String(user.name || "")
+    },
+    SECRET,
+    { expiresIn: "14d" }
+  );
+}
 
 export function authMiddleware(req, res, next) {
   const header = req.headers.authorization || "";
@@ -11,7 +24,8 @@ export function authMiddleware(req, res, next) {
     req.user = {
       id: Number(payload.id),
       role: String(payload.role || "user"),
-      email: String(payload.email || "")
+      email: String(payload.email || ""),
+      name: String(payload.name || "")
     };
     req.token = token;
     next();
@@ -25,7 +39,8 @@ export function verifyToken(token) {
   return {
     id: Number(payload.id),
     role: String(payload.role || "user"),
-    email: String(payload.email || "")
+    email: String(payload.email || ""),
+    name: String(payload.name || "")
   };
 }
 

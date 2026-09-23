@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { io } from "socket.io-client";
 import { API_BASE, api, clearSession, downloadIcs, getStoredUser, getToken, setSession, uploadMeetingFile, downloadMeetingFile } from "./api.js";
+
 import jalaali from "jalaali-js";
 
 const VIEWS = { week: "week", list: "list", form: "form", detail: "detail", admin: "admin" };
@@ -229,11 +230,13 @@ function Login({ onLogin }) {
       onLogin(data.user, data.token);
     } catch (err) {
       const msg =
+
         err?.message === "Failed to fetch" || err?.status >= 500 || err?.data?.error === "bad_json"
           ? "سرور CPGMeet در دسترس نیست. لطفاً اتصال اینترنت خود را بررسی کرده و صفحه را مجدداً بارگذاری کنید."
           : err?.data?.error === "cpgchat_unreachable"
             ? "سرور CPGChat در دسترس نیست. ابتدا چت را روشن کنید."
             : err?.data?.error === "invalid_credentials" || err?.status === 401
+
               ? "ایمیل یا رمز اشتباه است."
               : err?.data?.message || err?.data?.error || err.message || "خطا در ورود";
       setError(msg);
@@ -246,7 +249,7 @@ function Login({ onLogin }) {
     <div className="login-page">
       <form className="login-card" onSubmit={submit}>
         <h1>CPGMeet</h1>
-        <p className="muted">ورود با همان حساب CPGChat</p>
+        <p className="muted">ورود با حساب CPGMeet</p>
         {error ? <div className="error">{error}</div> : null}
         <label>ایمیل</label>
         <input
@@ -592,7 +595,7 @@ function MeetingForm({ users, principals, currentUser, initial, onSave, onCancel
               />
               <div className="compose-picker-list">
                 {users.length === 0 ? (
-                  <p className="muted">لیست کاربران خالی است. سرور CPGChat باید روشن باشد؛ اگر ادمین هستید از بخش مدیریت افراد اضافه کنید.</p>
+                  <p className="muted">لیست کاربران خالی است. از بخش مدیریت، افراد را اضافه کنید.</p>
                 ) : filteredUsers.length === 0 ? (
                   <p className="muted">نتیجه‌ای نیست.</p>
                 ) : (
@@ -1125,6 +1128,7 @@ function AdminDirectory({ busy, setBusy, onPeopleChanged }) {
   const [personName, setPersonName] = useState("");
   const [personEmail, setPersonEmail] = useState("");
   const [personPassword, setPersonPassword] = useState("");
+  const [personRole, setPersonRole] = useState("user");
 
   async function loadCompanies() {
     const data = await api("/api/admin/companies");
@@ -1162,8 +1166,10 @@ function AdminDirectory({ busy, setBusy, onPeopleChanged }) {
     if (!confirm("حذف این شرکت؟")) return;
     setBusy(true);
     setError("");
+    setMsg("");
     try {
       await api("/api/admin/companies/" + encodeURIComponent(id), { method: "DELETE", body: {} });
+      setMsg("شرکت حذف شد.");
       await loadCompanies();
     } catch (err) {
       setError(err?.data?.error || err.message || "خطا");
@@ -1184,13 +1190,13 @@ function AdminDirectory({ busy, setBusy, onPeopleChanged }) {
           name: personName.trim(),
           email: personEmail.trim(),
           password: personPassword,
-          role: "user",
-          locale: "fa"
+          role: "user"
         }
       });
       setPersonName("");
       setPersonEmail("");
       setPersonPassword("");
+      setPersonRole("user");
       setMsg("کاربر اضافه شد.");
       await loadPeople();
       onPeopleChanged?.();
@@ -1201,9 +1207,7 @@ function AdminDirectory({ busy, setBusy, onPeopleChanged }) {
           ? "این ایمیل قبلاً ثبت شده."
           : code === "password_short"
             ? "رمز حداقل ۸ کاراکتر باشد."
-            : code === "cpgchat_unreachable"
-              ? "سرور CPGChat در دسترس نیست."
-              : code || "خطا"
+            : code || "خطا"
       );
     } finally {
       setBusy(false);
@@ -1214,12 +1218,21 @@ function AdminDirectory({ busy, setBusy, onPeopleChanged }) {
     if (!confirm("حذف این کاربر؟")) return;
     setBusy(true);
     setError("");
+    setMsg("");
     try {
       await api("/api/admin/people/" + encodeURIComponent(id), { method: "DELETE", body: {} });
+      setMsg("کاربر حذف شد.");
       await loadPeople();
       onPeopleChanged?.();
     } catch (err) {
-      setError(err?.data?.error || err.message || "خطا");
+      const code = err?.data?.error || err.message;
+      setError(
+        code === "cannot_delete_self"
+          ? "نمی‌توانید خودتان را حذف کنید."
+          : code === "last_admin"
+            ? "حداقل یک ادمین باید بماند."
+            : code || "خطا"
+      );
     } finally {
       setBusy(false);
     }
@@ -1255,17 +1268,16 @@ function AdminDirectory({ busy, setBusy, onPeopleChanged }) {
           </form>
           <ul className="file-list">
             {companies.map((c) => (
-              <li key={c.id} className="file-card" style={{ justifyContent: "space-between" }}>
-                <span>
-                  {c.name}{" "}
-                  <span className="muted" dir="ltr">
-                    ({c.id})
-                  </span>
+              <li key={c.id} className="admin-person-row">
+                <div className="admin-person-main">
+                  <strong>{c.name}</strong>
                   {!Number(c.active) ? <span className="badge">غیرفعال</span> : null}
-                </span>
-                <button type="button" className="btn ghost" disabled={busy} onClick={() => removeCompany(c.id)}>
-                  حذف
-                </button>
+                </div>
+                <div className="admin-person-actions">
+                  <button type="button" className="btn danger" disabled={busy} onClick={() => removeCompany(c.id)}>
+                    حذف
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
@@ -1299,21 +1311,51 @@ function AdminDirectory({ busy, setBusy, onPeopleChanged }) {
           </form>
           <ul className="file-list">
             {people.map((u) => (
-              <li key={u.id} className="file-card" style={{ justifyContent: "space-between" }}>
-                <span>
-                  {u.name || u.email}{" "}
+              <li key={u.id} className="admin-person-row">
+                <div className="admin-person-main">
+                  <strong>{u.name || u.email}</strong>
                   <span className="muted" dir="ltr">
                     {u.email}
                   </span>
                   {u.role === "admin" ? <span className="badge">admin</span> : null}
-                </span>
-                <button type="button" className="btn ghost" disabled={busy} onClick={() => removePerson(u.id)}>
-                  حذف
-                </button>
+                </div>
+                <div className="admin-person-actions">
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    disabled={busy}
+                    onClick={async () => {
+                      const pwd = prompt("رمز جدید (حداقل ۸ کاراکتر):");
+                      if (!pwd) return;
+                      if (pwd.length < 8) {
+                        setError("رمز حداقل ۸ کاراکتر باشد.");
+                        return;
+                      }
+                      setBusy(true);
+                      setError("");
+                      try {
+                        await api("/api/admin/people/" + u.id + "/password", {
+                          method: "POST",
+                          body: { password: pwd }
+                        });
+                        setMsg("رمز «" + (u.name || u.email) + "» عوض شد.");
+                      } catch (err) {
+                        setError(err?.data?.error || err.message || "خطا");
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    تغییر رمز
+                  </button>
+                  <button type="button" className="btn danger" disabled={busy} onClick={() => removePerson(u.id)}>
+                    حذف
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
-          <p className="muted">کاربران در CPGChat ذخیره می‌شوند و در لیست دعوت جلسه دیده می‌شوند.</p>
+          <p className="muted">کاربران فقط در CPGMeet ذخیره می‌شوند (مستقل از چت).</p>
         </div>
       )}
 
@@ -1527,7 +1569,8 @@ export default function App() {
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission().catch(() => {});
     }
-    const socket = io(API_BASE || window.location.origin, {
+    const socket = io(API_BASE || "https://meet-api.cpg-pars.ir", {
+
       path: "/socket.io",
       auth: { token },
       transports: ["websocket", "polling"]

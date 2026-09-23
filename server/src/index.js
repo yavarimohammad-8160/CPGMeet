@@ -3,10 +3,25 @@ import express from "express";
 import cors from "cors";
 import { Server } from "socket.io";
 import { db, paths } from "./db.js";
-import { authMiddleware, verifyToken, SECRET } from "./auth.js";
+import { authMiddleware, signToken, verifyToken, SECRET } from "./auth.js";
+import {
+  ensureMeetUsers,
+  findUserByEmail,
+  findUserById,
+  hashPassword,
+  listActiveUsers,
+  listAllUsers,
+  publicUser,
+  verifyPassword
+} from "./users.js";
 import fs from "node:fs";
 import path from "node:path";
 import multer from "multer";
+
+const meetUsersSeed = ensureMeetUsers(db);
+if (meetUsersSeed.seededAdmin) {
+  console.log("[CPGMeet] Seeded admin", meetUsersSeed.email, "temp password:", meetUsersSeed.tempPassword);
+}
 
 const PORT = Number(process.env.PORT || 8788);
 const HOST = '0.0.0.0';
@@ -523,82 +538,45 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-app.post("/api/auth/login", async (req, res) => {
-  try {
-    const email = String(req.body?.email || "").trim().toLowerCase();
-    const password = String(req.body?.password || "");
-    if (!email || !password) return res.status(400).json({ error: "missing_fields" });
-    const upstream = await forwardJson("/api/auth/login", {
-      method: "POST",
-      body: { email, password }
-    });
-    return res.status(upstream.status).json(upstream.data);
-  } catch (err) {
-    console.error("login proxy", err);
-    return res.status(502).json({
-      error: "cpgchat_unreachable",
-      message: String(err?.message || err),
-      hint: `Ensure CPGChat is running at ${CPGCHAT_API_URL}`
-    });
+app.post("/api/auth/login", (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  if (!email || !password) return res.status(400).json({ error: "missing_fields" });
+  const row = findUserByEmail(db, email);
+  if (!row || !Number(row.active)) return res.status(401).json({ error: "invalid_credentials" });
+  if (!verifyPassword(password, row.password_hash)) {
+    return res.status(401).json({ error: "invalid_credentials" });
   }
+  const user = publicUser(row);
+  const token = signToken(user);
+  res.json({ token, user });
 });
 
-app.get("/api/me", authMiddleware, async (req, res) => {
-  try {
-    const upstream = await forwardJson("/api/me", { token: req.token });
-    if (upstream.status >= 200 && upstream.status < 300 && upstream.data) {
-      return res.json(upstream.data);
-    }
-    return res.json({
-      id: req.user.id,
-      email: req.user.email,
-      role: req.user.role,
-      name: req.user.email
-    });
-  } catch {
-    return res.json({
-      id: req.user.id,
-      email: req.user.email,
-      role: req.user.role,
-      name: req.user.email
-    });
-  }
+app.get("/api/me", authMiddleware, (req, res) => {
+  const row = findUserById(db, req.user.id);
+  if (!row || !Number(row.active)) return res.status(401).json({ error: "unauthorized" });
+  const user = publicUser(row);
+  res.json({ ...user, is_admin: isMeetAdmin(user) });
 });
 
-app.get("/api/users", authMiddleware, async (req, res) => {
-  try {
-    const upstream = await forwardJson("/api/users", { token: req.token });
-    return res.status(upstream.status).json(upstream.data);
-  } catch (err) {
-    console.error("users proxy", err);
-    return res.status(502).json({
-      error: "cpgchat_unreachable",
-      message: String(err?.message || err)
-    });
-  }
+app.get("/api/users", authMiddleware, (_req, res) => {
+  res.json(listActiveUsers(db));
 });
 
-app.get("/api/delegates/principals", authMiddleware, async (req, res) => {
+app.get("/api/delegates/principals", authMiddleware, (req, res) => {
   const me = Number(req.user.id);
   const rows = db
-    .prepare(`SELECT principal_id FROM meeting_delegates WHERE assistant_id = ?`)
+    .prepare("SELECT principal_id FROM meeting_delegates WHERE assistant_id = ?")
     .all(me);
   const ids = [me, ...rows.map((r) => Number(r.principal_id))];
   const unique = [...new Set(ids.filter((n) => Number.isFinite(n) && n > 0))];
-
-  let users = [];
-  try {
-    const upstream = await forwardJson("/api/users", { token: req.token });
-    users = Array.isArray(upstream.data) ? upstream.data : upstream.data?.users || [];
-  } catch {
-    users = [];
-  }
+  const users = listActiveUsers(db);
   const byId = new Map(users.map((u) => [Number(u.id), u]));
   const principals = unique.map((id) => {
-    const u = byId.get(id);
+    const u = byId.get(id) || (id === me ? publicUser(findUserById(db, me)) : null);
     return {
       id,
-      name: u?.name || (id === me ? req.user.email || "من" : `کاربر #${id}`),
+      name: u?.name || (id === me ? req.user.email || "من" : "کاربر #" + id),
       email: u?.email || (id === me ? req.user.email || "" : "")
     };
   });
@@ -644,60 +622,85 @@ app.delete("/api/admin/companies/:id", authMiddleware, requireAdmin, (req, res) 
   res.json({ ok: true });
 });
 
-app.get("/api/admin/people", authMiddleware, requireAdmin, async (req, res) => {
+app.get("/api/admin/people", authMiddleware, requireAdmin, (_req, res) => {
+  res.json(listAllUsers(db));
+});
+
+app.post("/api/admin/people", authMiddleware, requireAdmin, (req, res) => {
+  const name = String(req.body?.name || "").trim();
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  const role = String(req.body?.role || "user");
+  if (!name || !email || !password) return res.status(400).json({ error: "missing_fields" });
+  if (password.length < 8) return res.status(400).json({ error: "password_short" });
+  if (!["user", "admin"].includes(role)) return res.status(400).json({ error: "bad_role" });
   try {
-    const upstream = await forwardJson("/api/admin/users", { token: req.token });
-    return res.status(upstream.status).json(upstream.data);
+    const info = db
+      .prepare("INSERT INTO meet_users (name, email, password_hash, role, active) VALUES (?, ?, ?, ?, 1)")
+      .run(name, email, hashPassword(password), role);
+    const row = findUserById(db, info.lastInsertRowid);
+    res.status(201).json(publicUser(row));
   } catch (err) {
-    return res.status(502).json({ error: "cpgchat_unreachable", message: String(err?.message || err) });
+    const msg = String(err?.message || err);
+    if (/UNIQUE/i.test(msg)) return res.status(409).json({ error: "email_taken" });
+    return res.status(500).json({ error: "create_failed", message: msg });
   }
 });
 
-app.post("/api/admin/people", authMiddleware, requireAdmin, async (req, res) => {
-  try {
-    const upstream = await forwardJson("/api/admin/users", {
-      method: "POST",
-      token: req.token,
-      body: req.body
-    });
-    return res.status(upstream.status).json(upstream.data);
-  } catch (err) {
-    return res.status(502).json({ error: "cpgchat_unreachable", message: String(err?.message || err) });
+app.patch("/api/admin/people/:id", authMiddleware, requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const row = findUserById(db, id);
+  if (!row) return res.status(404).json({ error: "not_found" });
+  const body = req.body || {};
+  let name = row.name;
+  let role = row.role;
+  let active = Number(row.active) ? 1 : 0;
+  if (body.name !== undefined) {
+    name = String(body.name || "").trim();
+    if (!name) return res.status(400).json({ error: "missing_fields" });
   }
+  if (body.role !== undefined) {
+    role = String(body.role || "user");
+    if (!["user", "admin"].includes(role)) return res.status(400).json({ error: "bad_role" });
+  }
+  if (body.active !== undefined) active = Number(body.active) ? 1 : 0;
+  if (String(row.role) === "admin" && (role !== "admin" || !active)) {
+    const admins = db
+      .prepare("SELECT COUNT(*) AS n FROM meet_users WHERE role = 'admin' AND active = 1 AND id != ?")
+      .get(id);
+    if (!admins || Number(admins.n) === 0) return res.status(400).json({ error: "last_admin" });
+  }
+  db.prepare(
+    "UPDATE meet_users SET name = ?, role = ?, active = ?, updated_at = datetime('now') WHERE id = ?"
+  ).run(name, role, active, id);
+  res.json(publicUser(findUserById(db, id)));
 });
 
-app.patch("/api/admin/people/:id", authMiddleware, requireAdmin, async (req, res) => {
-  try {
-    const upstream = await forwardJson("/api/admin/users/" + encodeURIComponent(req.params.id), {
-      method: "PATCH",
-      token: req.token,
-      body: req.body
-    });
-    return res.status(upstream.status).json(upstream.data);
-  } catch (err) {
-    return res.status(502).json({ error: "cpgchat_unreachable", message: String(err?.message || err) });
-  }
+app.post("/api/admin/people/:id/password", authMiddleware, requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const row = findUserById(db, id);
+  if (!row) return res.status(404).json({ error: "not_found" });
+  const password = String(req.body?.password || "");
+  if (password.length < 8) return res.status(400).json({ error: "password_short" });
+  db.prepare(
+    "UPDATE meet_users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?"
+  ).run(hashPassword(password), id);
+  res.json({ ok: true });
 });
 
-app.delete("/api/admin/people/:id", authMiddleware, requireAdmin, async (req, res) => {
-  try {
-    const upstream = await forwardJson("/api/admin/users/" + encodeURIComponent(req.params.id), {
-      method: "DELETE",
-      token: req.token
-    });
-    return res.status(upstream.status).json(upstream.data);
-  } catch (err) {
-    return res.status(502).json({ error: "cpgchat_unreachable", message: String(err?.message || err) });
+app.delete("/api/admin/people/:id", authMiddleware, requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const row = findUserById(db, id);
+  if (!row) return res.status(404).json({ error: "not_found" });
+  if (Number(id) === Number(req.user.id)) return res.status(400).json({ error: "cannot_delete_self" });
+  if (String(row.role) === "admin") {
+    const admins = db
+      .prepare("SELECT COUNT(*) AS n FROM meet_users WHERE role = 'admin' AND active = 1 AND id != ?")
+      .get(id);
+    if (!admins || Number(admins.n) === 0) return res.status(400).json({ error: "last_admin" });
   }
-});
-
-app.get("/api/me", authMiddleware, (req, res) => {
-  res.json({
-    id: req.user.id,
-    email: req.user.email,
-    role: req.user.role,
-    is_admin: isMeetAdmin(req.user)
-  });
+  db.prepare("DELETE FROM meet_users WHERE id = ?").run(id);
+  res.json({ ok: true });
 });
 
 app.get("/api/admin/delegates", authMiddleware, requireAdmin, (_req, res) => {

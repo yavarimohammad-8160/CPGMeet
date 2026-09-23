@@ -971,3 +971,34 @@ h1, h2, h3 { margin: 0 0 0.75rem; color: var(--navy); }
 .file-card-delete { flex-shrink: 0; }
 
 
+
+.admin-person-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.35rem;
+  border-bottom: 1px solid #eee;
+  background: #fff;
+}
+.admin-person-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+.admin-person-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.admin-directory .btn.danger {
+  background: #c53030;
+  color: #fff;
+}
+.admin-directory .btn.secondary {
+  background: #edf2f7;
+  color: #1a365d;
+}

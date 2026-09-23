@@ -1,4 +1,12 @@
-export const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+export const API_BASE = (() => {
+  const fromEnv = String(import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
+  if (fromEnv) return fromEnv;
+  if (typeof window !== "undefined") {
+    const host = String(window.location.hostname || "").toLowerCase();
+    if (host === "meet.cpg-pars.ir") return "https://meet-api.cpg-pars.ir";
+  }
+  return "";
+})();
 
 const TOKEN_KEY = "cpgmeet_token";
 const USER_KEY = "cpgmeet_user";
