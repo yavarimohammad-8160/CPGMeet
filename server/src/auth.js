@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 
 const SECRET = process.env.JWT_SECRET || "cpgmeet-pilot-change-me";
+// JWT_TTL default 30d — localStorage sessions survive PWA close.
 
 export function signToken(user) {
   return jwt.sign(
@@ -11,7 +12,7 @@ export function signToken(user) {
       name: String(user.name || "")
     },
     SECRET,
-    { expiresIn: "14d" }
+    { expiresIn: process.env.JWT_TTL || "30d" }
   );
 }
 
