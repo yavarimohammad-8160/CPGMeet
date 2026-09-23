@@ -33,12 +33,64 @@ export function clearSession() {
   localStorage.removeItem(USER_KEY);
 }
 
+
+const DEFAULT_TIMEOUT_MS = 60_000;
+const RETRY_BACKOFF_MS = [1000, 3000, 8000];
+const RETRY_STATUSES = new Set([502, 503, 504]);
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function fetchWithRetry(url, init = {}, { timeoutMs = DEFAULT_TIMEOUT_MS, retries = 3 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...init, signal: ctrl.signal });
+      clearTimeout(timer);
+      if (RETRY_STATUSES.has(res.status) && attempt < retries) {
+        await sleep(RETRY_BACKOFF_MS[Math.min(attempt, RETRY_BACKOFF_MS.length - 1)]);
+        continue;
+      }
+      return res;
+    } catch (err) {
+      clearTimeout(timer);
+      lastErr = err;
+      if (attempt < retries) {
+        await sleep(RETRY_BACKOFF_MS[Math.min(attempt, RETRY_BACKOFF_MS.length - 1)]);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr || new Error("fetch failed");
+}
+
+let wakePromise = null;
+/** Fire-and-forget health ping to wake Render cold start. */
+export function wakeApi() {
+  if (wakePromise) return wakePromise;
+  wakePromise = fetchWithRetry(`${API_BASE}/api/health`, {
+    method: "GET",
+    headers: { Accept: "application/json" }
+  }, { timeoutMs: 90_000, retries: 2 })
+    .then((r) => r.ok)
+    .catch(() => false)
+    .finally(() => {
+      setTimeout(() => { wakePromise = null; }, 30_000);
+    });
+  return wakePromise;
+}
+
+
 export async function api(path, { method = "GET", body, token } = {}) {
   const headers = { Accept: "application/json" };
   const t = token ?? getToken();
   if (t) headers.Authorization = `Bearer ${t}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetchWithRetry(`${API_BASE}${path}`, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined
@@ -93,7 +145,6 @@ export async function uploadMeetingFile(meetingId, file, kind = "attachment") {
     const err = new Error(data?.error || `http_${res.status}`);
     err.status = res.status;
     err.data = data;
-    throw err;
   }
   return data;
 }
