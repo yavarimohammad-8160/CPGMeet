@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "build": "npm run build:web",
+    "start": "npm run start:server",
     "install:all": "npm install --prefix server && npm install --prefix web",
     "dev:server": "npm run dev --prefix server",
     "dev:web": "npm run dev --prefix web",

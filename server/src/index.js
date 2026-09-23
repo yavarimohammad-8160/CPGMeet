@@ -9,9 +9,10 @@ import path from "node:path";
 import multer from "multer";
 
 const PORT = Number(process.env.PORT || 8788);
+const HOST = '0.0.0.0';
 const CPGCHAT_API_URL = (process.env.CPGCHAT_API_URL || "http://127.0.0.1:8787").replace(/\/$/, "");
 const CPGMEET_NOTIFY_SECRET = process.env.CPGMEET_NOTIFY_SECRET || "cpgmeet-notify-pilot";
-const CPGMEET_WEB_URL = (process.env.CPGMEET_WEB_URL || "https://127.0.0.1:5174").replace(/\/$/, "");
+const CPGMEET_WEB_URL = (process.env.CPGMEET_WEB_URL || "https://meet.cpg-pars.ir").replace(/\/$/, "");
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(paths.rootDir, "data", "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -1189,8 +1190,14 @@ function runReminderJob() {
 setInterval(runReminderJob, 60 * 1000);
 setTimeout(runReminderJob, 5 * 1000);
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`[CPGMeet] API http://0.0.0.0:${PORT}`);
+// Serve the production frontend from the same origin as API and Socket.IO.
+const webDist = path.join(paths.rootDir, "web", "dist");
+app.use("/api", (_req, res) => res.status(404).json({ error: "not_found" }));
+app.use(express.static(webDist));
+app.get("*", (_req, res) => res.sendFile(path.join(webDist, "index.html")));
+
+server.listen(PORT, HOST, () => {
+  console.log(`Server listening on ${HOST}:${PORT}`);
   console.log(`[CPGMeet] DB ${paths.dbPath}`);
   console.log(`[CPGMeet] CPGChat ${CPGCHAT_API_URL}`);
   console.log(`[CPGMeet] Notify -> ${CPGCHAT_API_URL}/api/internal/cpgmeet/notify`);

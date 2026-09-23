@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { io } from "socket.io-client";
-import { api, clearSession, downloadIcs, getStoredUser, getToken, setSession, uploadMeetingFile, downloadMeetingFile } from "./api.js";
+import { API_BASE, api, clearSession, downloadIcs, getStoredUser, getToken, setSession, uploadMeetingFile, downloadMeetingFile } from "./api.js";
 import jalaali from "jalaali-js";
 
 const VIEWS = { week: "week", list: "list", form: "form", detail: "detail", admin: "admin" };
@@ -229,8 +229,8 @@ function Login({ onLogin }) {
       onLogin(data.user, data.token);
     } catch (err) {
       const msg =
-        err?.message === "Failed to fetch"
-          ? "سرور CPGMeet در دسترس نیست. صفحه را از http://172.19.111.8:5174 باز کنید و API روی 8788 روشن باشد."
+        err?.message === "Failed to fetch" || err?.status >= 500 || err?.data?.error === "bad_json"
+          ? "سرور CPGMeet در دسترس نیست. لطفاً اتصال اینترنت خود را بررسی کرده و صفحه را مجدداً بارگذاری کنید."
           : err?.data?.error === "cpgchat_unreachable"
             ? "سرور CPGChat در دسترس نیست. ابتدا چت را روشن کنید."
             : err?.data?.error === "invalid_credentials" || err?.status === 401
@@ -1527,7 +1527,7 @@ export default function App() {
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission().catch(() => {});
     }
-    const socket = io({
+    const socket = io(API_BASE || window.location.origin, {
       path: "/socket.io",
       auth: { token },
       transports: ["websocket", "polling"]

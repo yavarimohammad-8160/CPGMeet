@@ -1,3 +1,5 @@
+export const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+
 const TOKEN_KEY = "cpgmeet_token";
 const USER_KEY = "cpgmeet_user";
 
@@ -28,7 +30,7 @@ export async function api(path, { method = "GET", body, token } = {}) {
   const t = token ?? getToken();
   if (t) headers.Authorization = `Bearer ${t}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(path, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined
@@ -50,7 +52,7 @@ export async function api(path, { method = "GET", body, token } = {}) {
 }
 
 export async function downloadIcs(meetingId) {
-  const res = await fetch(`/api/meetings/${meetingId}/ics`, {
+  const res = await fetch(`${API_BASE}/api/meetings/${meetingId}/ics`, {
     headers: { Authorization: `Bearer ${getToken()}` }
   });
   if (!res.ok) throw new Error("ics_failed");
@@ -67,7 +69,7 @@ export async function uploadMeetingFile(meetingId, file, kind = "attachment") {
   const fd = new FormData();
   fd.append("file", file);
   fd.append("kind", kind);
-  const res = await fetch(`/api/meetings/${meetingId}/files?kind=${encodeURIComponent(kind)}`, {
+  const res = await fetch(`${API_BASE}/api/meetings/${meetingId}/files?kind=${encodeURIComponent(kind)}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${getToken()}` },
     body: fd
@@ -89,7 +91,7 @@ export async function uploadMeetingFile(meetingId, file, kind = "attachment") {
 }
 
 export async function downloadMeetingFile(fileId, name) {
-  const res = await fetch(`/api/files/${fileId}`, {
+  const res = await fetch(`${API_BASE}/api/files/${fileId}`, {
     headers: { Authorization: `Bearer ${getToken()}` }
   });
   if (!res.ok) throw new Error("download_failed");

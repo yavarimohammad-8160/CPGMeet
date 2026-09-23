@@ -2,7 +2,21 @@
 
 اپ جدا از CPGChat برای مدیریت جلسات سازمانی. روی LAN کنار CPGChat اجرا می‌شود و با **همان JWT / حساب کاربری** لاگین می‌کند.
 
-## پیش‌نیاز
+## استقرار پروداکشن روی meet.cpg-pars.ir
+
+- در Render یک Node Web Service با شاخهٔ `main` و ریشهٔ ریپازیتوری انتخاب کنید.
+- Build Command: `npm ci --prefix server && npm ci --prefix web --include=dev && npm run build`
+- Start Command: `npm start`
+- Health Check Path: `/api/health`
+- دامنهٔ `meet.cpg-pars.ir` را به همان Web Service متصل کنید. سرور Node خروجی `web/dist`، مسیرهای `/api` و Socket.IO را روی یک پورت ارائه می‌کند. در صورت استفاده از Cloudflare، این مسیرها و WebSocket باید به همین سرویس هدایت شوند.
+- `PORT` از محیط میزبان خوانده می‌شود و سرور روی `0.0.0.0` گوش می‌دهد.
+- `web/.env.production` مقدار خالی `VITE_API_URL` دارد تا مرورگر به دامنهٔ جاری متصل شود. برای API جداگانه، origin کامل HTTPS را بدون `/api` هنگام build در `VITE_API_URL` تنظیم و مجدداً build کنید.
+- `CPGMEET_WEB_URL=https://meet.cpg-pars.ir` و `CPGCHAT_API_URL` را به آدرس قابل دسترسی سرویس واقعی CPGChat تنظیم کنید؛ مقدار localhost برای یک سرویس چت جداگانه در Render مناسب نیست.
+- `JWT_SECRET` و `CPGMEET_NOTIFY_SECRET` باید مقادیر امن و مشترک با CPGChat داشته باشند؛ آن‌ها را در تنظیمات محیط میزبان نگه دارید.
+- برای حفظ داده‌ها، `DB_PATH` و `UPLOADS_DIR` را به دیسک پایدار سرویس متصل کنید.
+- موفقیت `/api/health` فقط سلامت Meet را نشان می‌دهد؛ ورود کاربران به دسترسی CPGChat نیز وابسته است. اگر ۵۰۳ باقی ماند، لاگ استقرار، وضعیت سرویس و تنظیمات دامنه/پروکسی را بررسی کنید.
+
+## پیش‌نیاز توسعه
 
 - Node.js 18+ (پیشنهادی 20+)
 - **CPGChat باید روشن باشد** (پیش‌فرض API روی `http://127.0.0.1:8787`) تا لاگین و لیست کاربران کار کند.
