@@ -1,141 +1,181 @@
+/**
+ * CPGMeet DB layer.
+ *
+ * Default: local sql.js file SQLite (unchanged for local/dev).
+ * When CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN are set, use Cloudflare D1
+ * HTTP API via a sync curl client (see db-d1.js). Optional D1_DATABASE_ID
+ * (default 8beb7478-736d-4246-848e-47575e41ff6b).
+ *
+ * Interface stays sync: db.prepare().get/all/run, db.exec, db.pragma.
+ */
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import initSqlJs from "sql.js";
+import { createD1Db, DEFAULT_D1_DATABASE_ID } from "./db-d1.js";
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "../..");
-const dbPath =
-  process.env.DB_PATH ||
-  (fs.existsSync("/var/data")
-    ? path.join("/var/data", "cpgmeet.db")
-    : path.join(rootDir, "data", "cpgmeet.db"));
-fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-const SQL = await initSqlJs({
-  locateFile: (file) => path.join(path.dirname(require.resolve("sql.js")), file)
-});
+const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+const useD1 = Boolean(accountId && apiToken);
+const d1DatabaseId = process.env.D1_DATABASE_ID || DEFAULT_D1_DATABASE_ID;
 
-const raw = fs.existsSync(dbPath)
-  ? new SQL.Database(fs.readFileSync(dbPath))
-  : new SQL.Database();
+/** @type {{ prepare: Function, exec: Function, pragma: Function }} */
+let db;
+/** @type {string} */
+let dbPath;
+/** @type {() => string} */
+let flushDbImpl;
 
-function persist() {
+if (useD1) {
+  const d1 = createD1Db({
+    accountId,
+    apiToken,
+    databaseId: d1DatabaseId
+  });
+  db = d1.db;
+  dbPath = d1.dbPath; // e.g. d1:<uuid>
+  flushDbImpl = d1.flushDb;
+  console.log(`[CPGMeet] Using Cloudflare D1 (${dbPath})`);
+} else {
+  dbPath =
+    process.env.DB_PATH ||
+    (fs.existsSync("/var/data")
+      ? path.join("/var/data", "cpgmeet.db")
+      : path.join(rootDir, "data", "cpgmeet.db"));
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  fs.writeFileSync(dbPath, Buffer.from(raw.export()));
-}
 
-function coerceValue(v) {
-  if (typeof v === "bigint") return Number(v);
-  return v;
-}
+  const SQL = await initSqlJs({
+    locateFile: (file) => path.join(path.dirname(require.resolve("sql.js")), file)
+  });
 
-function coerceRow(row) {
-  if (!row) return undefined;
-  const out = {};
-  for (const [k, v] of Object.entries(row)) out[k] = coerceValue(v);
-  return out;
-}
+  const raw = fs.existsSync(dbPath)
+    ? new SQL.Database(fs.readFileSync(dbPath))
+    : new SQL.Database();
 
-function sanitizeBindValue(v) {
-  if (v === undefined) return null;
-  if (typeof v === "bigint") return Number(v);
-  if (typeof v === "boolean") return v ? 1 : 0;
-  return v;
-}
-
-function normalizeParams(args) {
-  if (!args.length) return null;
-  if (args.length === 1 && Array.isArray(args[0])) {
-    return args[0].map(sanitizeBindValue);
+  function persist() {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    fs.writeFileSync(dbPath, Buffer.from(raw.export()));
   }
-  const first = args[0];
-  if (
-    first &&
-    typeof first === "object" &&
-    !Array.isArray(first) &&
-    !(first instanceof Date) &&
-    !Buffer.isBuffer(first)
-  ) {
-    const mapped = {};
-    for (const [k, v] of Object.entries(first)) {
-      const key = /^[@:$]/.test(k) ? k : `@${k}`;
-      mapped[key] = sanitizeBindValue(v);
+
+  function coerceValue(v) {
+    if (typeof v === "bigint") return Number(v);
+    return v;
+  }
+
+  function coerceRow(row) {
+    if (!row) return undefined;
+    const out = {};
+    for (const [k, v] of Object.entries(row)) out[k] = coerceValue(v);
+    return out;
+  }
+
+  function sanitizeBindValue(v) {
+    if (v === undefined) return null;
+    if (typeof v === "bigint") return Number(v);
+    if (typeof v === "boolean") return v ? 1 : 0;
+    return v;
+  }
+
+  function normalizeParams(args) {
+    if (!args.length) return null;
+    if (args.length === 1 && Array.isArray(args[0])) {
+      return args[0].map(sanitizeBindValue);
     }
-    return mapped;
+    const first = args[0];
+    if (
+      first &&
+      typeof first === "object" &&
+      !Array.isArray(first) &&
+      !(first instanceof Date) &&
+      !Buffer.isBuffer(first)
+    ) {
+      const mapped = {};
+      for (const [k, v] of Object.entries(first)) {
+        const key = /^[@:$]/.test(k) ? k : `@${k}`;
+        mapped[key] = sanitizeBindValue(v);
+      }
+      return mapped;
+    }
+    return args.map(sanitizeBindValue);
   }
-  return args.map(sanitizeBindValue);
-}
 
-function bindStmt(stmt, params) {
-  if (params == null) return;
-  if (Array.isArray(params)) {
-    if (params.length) stmt.bind(params);
-    return;
+  function bindStmt(stmt, params) {
+    if (params == null) return;
+    if (Array.isArray(params)) {
+      if (params.length) stmt.bind(params);
+      return;
+    }
+    if (Object.keys(params).length) stmt.bind(params);
   }
-  if (Object.keys(params).length) stmt.bind(params);
-}
 
-function scalar(sql) {
-  const result = raw.exec(sql);
-  const v = result[0]?.values?.[0]?.[0];
-  return coerceValue(v ?? 0);
-}
+  function scalar(sql) {
+    const result = raw.exec(sql);
+    const v = result[0]?.values?.[0]?.[0];
+    return coerceValue(v ?? 0);
+  }
 
-function prepare(sql) {
-  return {
-    get(...args) {
-      const stmt = raw.prepare(sql);
-      try {
-        bindStmt(stmt, normalizeParams(args));
-        return stmt.step() ? coerceRow(stmt.getAsObject()) : undefined;
-      } finally {
-        stmt.free();
+  function prepare(sql) {
+    return {
+      get(...args) {
+        const stmt = raw.prepare(sql);
+        try {
+          bindStmt(stmt, normalizeParams(args));
+          return stmt.step() ? coerceRow(stmt.getAsObject()) : undefined;
+        } finally {
+          stmt.free();
+        }
+      },
+      all(...args) {
+        const stmt = raw.prepare(sql);
+        try {
+          bindStmt(stmt, normalizeParams(args));
+          const rows = [];
+          while (stmt.step()) rows.push(coerceRow(stmt.getAsObject()));
+          return rows;
+        } finally {
+          stmt.free();
+        }
+      },
+      run(...args) {
+        const stmt = raw.prepare(sql);
+        try {
+          bindStmt(stmt, normalizeParams(args));
+          stmt.step();
+        } finally {
+          stmt.free();
+        }
+        const lastInsertRowid = Number(scalar("SELECT last_insert_rowid()"));
+        const changes = Number(scalar("SELECT changes()"));
+        persist();
+        return { lastInsertRowid, changes };
       }
-    },
-    all(...args) {
-      const stmt = raw.prepare(sql);
-      try {
-        bindStmt(stmt, normalizeParams(args));
-        const rows = [];
-        while (stmt.step()) rows.push(coerceRow(stmt.getAsObject()));
-        return rows;
-      } finally {
-        stmt.free();
-      }
-    },
-    run(...args) {
-      const stmt = raw.prepare(sql);
-      try {
-        bindStmt(stmt, normalizeParams(args));
-        stmt.step();
-      } finally {
-        stmt.free();
-      }
-      const lastInsertRowid = Number(scalar("SELECT last_insert_rowid()"));
-      const changes = Number(scalar("SELECT changes()"));
+    };
+  }
+
+  db = {
+    prepare,
+    exec(sql) {
+      raw.exec(sql);
       persist();
-      return { lastInsertRowid, changes };
-    }
+    },
+    pragma() {}
+  };
+
+  flushDbImpl = () => {
+    persist();
+    return dbPath;
   };
 }
 
-export const db = {
-  prepare,
-  exec(sql) {
-    raw.exec(sql);
-    persist();
-  },
-  pragma() {}
-};
-
+export { db };
 export const paths = { dbPath, rootDir };
-
 export function flushDb() {
-  persist();
-  return dbPath;
+  return flushDbImpl();
 }
 
 db.exec(`
@@ -190,7 +230,6 @@ CREATE INDEX IF NOT EXISTS idx_delegates_assistant ON meeting_delegates(assistan
   }
 })();
 
-
 // Additive: location_key/detail + catering flags
 (function migrateLocationCatering() {
   const cols = db.prepare("PRAGMA table_info(meetings)").all();
@@ -207,6 +246,7 @@ CREATE INDEX IF NOT EXISTS idx_delegates_assistant ON meeting_delegates(assistan
 })();
 
 // Additive: companies catalog (admin-managed)
+// Seed only when companies table is empty — never wipe existing rows.
 (function migrateCompaniesCatalog() {
   db.exec(`
 CREATE TABLE IF NOT EXISTS companies (
