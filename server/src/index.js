@@ -116,13 +116,23 @@ function getMeetingFile(id) {
   return db.prepare("SELECT * FROM meeting_files WHERE id = ?").get(Number(id));
 }
 
+const allowedOrigins = [...new Set([
+  "https://meet.cpg-pars.ir",
+  "https://chat.cpg-pars.ir",
+  ...(process.env.CORS_ORIGIN || "").split(",").map((origin) => origin.trim()).filter(Boolean),
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:5174"
+])];
+
 const app = express();
-app.use(cors());
+app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: true, credentials: true }
+  cors: { origin: allowedOrigins, methods: ["GET", "POST"], credentials: true }
 });
 
 const online = new Map(); // userId -> Set(socketId)
