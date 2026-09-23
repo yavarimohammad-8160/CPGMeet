@@ -7,7 +7,11 @@ import initSqlJs from "sql.js";
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "../..");
-const dbPath = process.env.DB_PATH || path.join(rootDir, "data", "cpgmeet.db");
+const dbPath =
+  process.env.DB_PATH ||
+  (fs.existsSync("/var/data")
+    ? path.join("/var/data", "cpgmeet.db")
+    : path.join(rootDir, "data", "cpgmeet.db"));
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
 const SQL = await initSqlJs({

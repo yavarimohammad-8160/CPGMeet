@@ -20,8 +20,12 @@ import multer from "multer";
 
 const meetUsersSeed = ensureMeetUsers(db);
 if (meetUsersSeed.seededAdmin) {
-  console.log("[CPGMeet] Seeded admin", meetUsersSeed.email, "temp password:", meetUsersSeed.tempPassword);
+  console.log("[CPGMeet] Seeded admin user");
 }
+if (meetUsersSeed.seededPeopleCount) {
+  console.log("[CPGMeet] Seeded people:", meetUsersSeed.seededPeopleCount);
+}
+
 
 const PORT = Number(process.env.PORT || 8788);
 const HOST = '0.0.0.0';

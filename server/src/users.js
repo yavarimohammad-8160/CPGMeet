@@ -1,4 +1,9 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import bcrypt from "bcryptjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function hashPassword(password) {
   return bcrypt.hashSync(String(password || ""), 10);
@@ -38,21 +43,52 @@ CREATE TABLE IF NOT EXISTS meet_users (
 );
 CREATE INDEX IF NOT EXISTS idx_meet_users_email ON meet_users(email);
 `);
-  const count = db.prepare("SELECT COUNT(*) AS n FROM meet_users").get();
-  if (!count || Number(count.n) === 0) {
-    const hash = hashPassword("MeetAdmin1405!");
+
+  let seededAdmin = false;
+  const adminEmail = "m.yavari@cpg-pars.com";
+  const admin = db.prepare("SELECT id, role FROM meet_users WHERE lower(email) = ?").get(adminEmail);
+  if (!admin) {
+    const adminPassword = process.env.MEET_ADMIN_PASSWORD || "MeetAdmin1405!";
+    const hash = hashPassword(adminPassword);
     db.prepare(
       `INSERT INTO meet_users (name, email, password_hash, role, active)
        VALUES (?, ?, ?, 'admin', 1)`
-    ).run("محمد یاوری", "m.yavari@cpg-pars.com", hash);
-    return { seededAdmin: true, email: "m.yavari@cpg-pars.com", tempPassword: "MeetAdmin1405!" };
-  }
-  // Ensure known admin email is admin if present
-  const admin = db.prepare("SELECT id, role FROM meet_users WHERE lower(email) = ?").get("m.yavari@cpg-pars.com");
-  if (admin && String(admin.role) !== "admin") {
+    ).run("محمد یاوری", adminEmail, hash);
+    seededAdmin = true;
+  } else if (String(admin.role) !== "admin") {
     db.prepare("UPDATE meet_users SET role = 'admin', updated_at = datetime('now') WHERE id = ?").run(admin.id);
   }
-  return { seededAdmin: false };
+
+  let seededPeopleCount = 0;
+  const seedPath = path.join(__dirname, "..", "seed-people.json");
+  if (fs.existsSync(seedPath)) {
+    let people = [];
+    try {
+      people = JSON.parse(fs.readFileSync(seedPath, "utf8"));
+    } catch (err) {
+      console.error("[CPGMeet] Failed to parse seed-people.json:", err?.message || err);
+      people = [];
+    }
+    if (Array.isArray(people)) {
+      const userPassword = process.env.MEET_USER_TEMP_PASSWORD || "ChangeMe1405!";
+      const insert = db.prepare(
+        `INSERT INTO meet_users (name, email, password_hash, role, active)
+         VALUES (?, ?, ?, 'user', 1)`
+      );
+      const find = db.prepare("SELECT id FROM meet_users WHERE lower(email) = ?");
+      for (const entry of people) {
+        const email = String(entry?.email || "").trim().toLowerCase();
+        const name = String(entry?.name || "").trim();
+        if (!email || !name) continue;
+        const existing = find.get(email);
+        if (existing) continue;
+        insert.run(name, email, hashPassword(userPassword));
+        seededPeopleCount += 1;
+      }
+    }
+  }
+
+  return { seededAdmin, seededPeopleCount };
 }
 
 export function listActiveUsers(db) {

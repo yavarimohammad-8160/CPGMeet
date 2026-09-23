@@ -47,3 +47,7 @@ next-env.d.ts
 !/public/generated/.gitkeep
 /public/outputs/*
 !/public/outputs/.gitkeep
+
+# SQLite databases (persist on Render disk; do not overwrite on deploy)
+data/*.db
+data/*.db-*
