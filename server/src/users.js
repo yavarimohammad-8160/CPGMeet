@@ -25,7 +25,8 @@ export function publicUser(row) {
     name: String(row.name || ""),
     email: String(row.email || ""),
     role: String(row.role || "user"),
-    active: Number(row.active) ? 1 : 0
+    active: Number(row.active) ? 1 : 0,
+    must_change_password: Number(row.must_change_password) ? 1 : 0
   };
 }
 
@@ -43,6 +44,17 @@ CREATE TABLE IF NOT EXISTS meet_users (
 );
 CREATE INDEX IF NOT EXISTS idx_meet_users_email ON meet_users(email);
 `);
+  // Existing rows default to 0 (no forced change). Only admin create-user sets 1.
+  // Try ALTER directly so D1 works even if PRAGMA table_info is limited.
+  try {
+    db.exec("ALTER TABLE meet_users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0");
+  } catch (err) {
+    const msg = String(err?.message || err);
+    if (!/duplicate column|already exists/i.test(msg)) {
+      console.warn("[CPGMeet] must_change_password migrate:", msg);
+    }
+  }
+
 
   let seededAdmin = false;
   const adminEmail = "m.yavari@cpg-pars.com";
@@ -51,8 +63,8 @@ CREATE INDEX IF NOT EXISTS idx_meet_users_email ON meet_users(email);
     const adminPassword = process.env.MEET_ADMIN_PASSWORD || "MeetAdmin1405!";
     const hash = hashPassword(adminPassword);
     db.prepare(
-      `INSERT INTO meet_users (name, email, password_hash, role, active)
-       VALUES (?, ?, ?, 'admin', 1)`
+      `INSERT INTO meet_users (name, email, password_hash, role, active, must_change_password)
+       VALUES (?, ?, ?, 'admin', 1, 0)`
     ).run("محمد یاوری", adminEmail, hash);
     seededAdmin = true;
   } else if (String(admin.role) !== "admin") {
@@ -72,8 +84,8 @@ CREATE INDEX IF NOT EXISTS idx_meet_users_email ON meet_users(email);
     if (Array.isArray(people)) {
       const userPassword = process.env.MEET_USER_TEMP_PASSWORD || "ChangeMe1405!";
       const insert = db.prepare(
-        `INSERT INTO meet_users (name, email, password_hash, role, active)
-         VALUES (?, ?, ?, 'user', 1)`
+        `INSERT INTO meet_users (name, email, password_hash, role, active, must_change_password)
+         VALUES (?, ?, ?, 'user', 1, 0)`
       );
       const find = db.prepare("SELECT id FROM meet_users WHERE lower(email) = ?");
       for (const entry of people) {

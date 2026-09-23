@@ -1002,3 +1002,43 @@ h1, h2, h3 { margin: 0 0 0.75rem; color: var(--navy); }
   background: #edf2f7;
   color: #1a365d;
 }
+
+/* Mobile / PWA */
+html, body, #root {
+  height: 100%;
+  height: 100dvh;
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+body {
+  overscroll-behavior: none;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.app-shell {
+  min-height: 100%;
+  min-height: 100dvh;
+  max-width: 100vw;
+}
+.force-pw-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+  background: linear-gradient(165deg, #1e3a5f 0%, #2c5282 55%, #3182ce 100%);
+}
+.force-pw-card { width: min(400px, 94vw); }
+@media (max-width: 900px) {
+  .nav-btn, .btn {
+    min-height: 44px;
+  }
+  .main {
+    padding: 0.75rem;
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    overflow-x: hidden;
+  }
+  .admin-directory input, .admin-directory select, .form input, .form textarea, .form select {
+    font-size: 16px; /* avoid iOS zoom */
+  }
+}

@@ -210,6 +210,66 @@ function rsvpLabel(r) {
   );
 }
 
+
+function ForcePasswordModal({ token, user, onDone }) {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setError("");
+    if (pw.length < 8) {
+      setError("رمز حداقل ۸ کاراکتر باشد");
+      return;
+    }
+    if (pw !== pw2) {
+      setError("رمز جدید و تکرار آن یکی نیستند");
+      return;
+    }
+    setBusy(true);
+    try {
+      const data = await api("/api/auth/change-password", {
+        method: "POST",
+        body: { newPassword: pw },
+        token
+      });
+      const next = data.user || { ...user, must_change_password: 0 };
+      setSession(token, next);
+      onDone(next);
+    } catch (err) {
+      const code = err?.data?.error;
+      setError(
+        code === "password_short"
+          ? "رمز حداقل ۸ کاراکتر باشد"
+          : code === "wrong_password"
+            ? "رمز فعلی نادرست است"
+            : err?.data?.message || err.message || "خطا در تغییر رمز"
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="force-pw-overlay" role="dialog" aria-modal="true">
+      <form className="login-card force-pw-card" onSubmit={submit}>
+        <h1>لطفاً رمز عبور خود را عوض کنید</h1>
+        <p className="muted">برای ادامه باید رمز موقت را عوض کنید. این پنجره بسته نمی‌شود تا رمز جدید ذخیره شود.</p>
+        {error ? <div className="error">{error}</div> : null}
+        <label>رمز جدید</label>
+        <input type="password" autoComplete="new-password" value={pw} onChange={(e) => setPw(e.target.value)} minLength={8} required dir="ltr" />
+        <label>تکرار رمز جدید</label>
+        <input type="password" autoComplete="new-password" value={pw2} onChange={(e) => setPw2(e.target.value)} minLength={8} required dir="ltr" />
+        <div className="row" style={{ marginTop: "1.25rem" }}>
+          <button className="btn" type="submit" disabled={busy}>{busy ? "..." : "تغییر رمز"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function Login({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -1118,7 +1178,7 @@ function FileList({ items, title }) {
 }
 
 
-function AdminDirectory({ busy, setBusy, onPeopleChanged }) {
+function AdminDirectory({ busy, setBusy, onPeopleChanged, onBackToMeetings }) {
   const [tab, setTab] = useState("people");
   const [companies, setCompanies] = useState([]);
   const [people, setPeople] = useState([]);
@@ -1240,8 +1300,15 @@ function AdminDirectory({ busy, setBusy, onPeopleChanged }) {
 
   return (
     <div className="panel admin-directory">
-      <h2>مدیریت افراد و شرکت‌ها</h2>
-      <div className="row" style={{ marginBottom: "0.75rem", gap: "0.5rem" }}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+        <h2 style={{ margin: 0 }}>مدیریت افراد و شرکت‌ها</h2>
+        {onBackToMeetings ? (
+          <button type="button" className="btn" onClick={onBackToMeetings}>
+            بازگشت به جلسات
+          </button>
+        ) : null}
+      </div>
+      <div className="row" style={{ marginBottom: "0.75rem", gap: "0.5rem", marginTop: "0.75rem" }}>
         <button type="button" className={"btn" + (tab === "people" ? "" : " secondary")} onClick={() => setTab("people")}>
           افراد
         </button>
@@ -1681,6 +1748,24 @@ export default function App() {
     return rows;
   }, [meetings, user, listFilter]);
 
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    api("/api/me", { token })
+      .then((u) => {
+        if (cancelled) return;
+        setUser(u);
+        setSession(token, u);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        clearSession();
+        setToken("");
+        setUser(null);
+      });
+    return () => { cancelled = true; };
+  }, [token]);
+
   if (!token || !user) {
     return (
       <Login
@@ -1688,6 +1773,16 @@ export default function App() {
           setUser(u);
           setToken(t);
         }}
+      />
+    );
+  }
+
+  if (Number(user.must_change_password) === 1) {
+    return (
+      <ForcePasswordModal
+        token={token}
+        user={user}
+        onDone={(u) => setUser(u)}
       />
     );
   }
@@ -1861,7 +1956,7 @@ export default function App() {
 
         {view === VIEWS.admin && isMeetAdminClient(user) ? (
           <>
-            <AdminDirectory busy={busy} setBusy={setBusy} onPeopleChanged={() => loadUsers().catch(() => {})} />
+            <AdminDirectory busy={busy} setBusy={setBusy} onPeopleChanged={() => loadUsers().catch(() => {})} onBackToMeetings={() => setView(VIEWS.week)} />
             <DelegatesAdmin users={users} busy={busy} setBusy={setBusy} />
           </>
         ) : null}

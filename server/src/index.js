@@ -556,6 +556,34 @@ app.post("/api/auth/login", (req, res) => {
   res.json({ token, user });
 });
 
+
+app.post("/api/auth/change-password", authMiddleware, (req, res) => {
+  try {
+    const currentPassword = String(req.body?.currentPassword || "");
+    const newPassword = String(req.body?.newPassword || "");
+    if (!newPassword) return res.status(400).json({ error: "missing_fields" });
+    if (newPassword.length < 8) return res.status(400).json({ error: "password_short" });
+    const row = findUserById(db, req.user.id);
+    if (!row || !Number(row.active)) return res.status(401).json({ error: "unauthorized" });
+    const forced = Number(row.must_change_password) === 1;
+    if (!forced) {
+      if (!currentPassword) return res.status(400).json({ error: "missing_fields" });
+      if (!verifyPassword(currentPassword, row.password_hash)) {
+        return res.status(400).json({ error: "wrong_password" });
+      }
+    } else if (currentPassword && !verifyPassword(currentPassword, row.password_hash)) {
+      return res.status(400).json({ error: "wrong_password" });
+    }
+    db.prepare(
+      "UPDATE meet_users SET password_hash = ?, must_change_password = 0, updated_at = datetime('now') WHERE id = ?"
+    ).run(hashPassword(newPassword), req.user.id);
+    res.json({ ok: true, user: publicUser(findUserById(db, req.user.id)) });
+  } catch (err) {
+    console.error("change-password", err);
+    res.status(500).json({ error: "password_failed", message: String(err?.message || err) });
+  }
+});
+
 app.get("/api/me", authMiddleware, (req, res) => {
   const row = findUserById(db, req.user.id);
   if (!row || !Number(row.active)) return res.status(401).json({ error: "unauthorized" });
@@ -640,7 +668,7 @@ app.post("/api/admin/people", authMiddleware, requireAdmin, (req, res) => {
   if (!["user", "admin"].includes(role)) return res.status(400).json({ error: "bad_role" });
   try {
     const info = db
-      .prepare("INSERT INTO meet_users (name, email, password_hash, role, active) VALUES (?, ?, ?, ?, 1)")
+      .prepare("INSERT INTO meet_users (name, email, password_hash, role, active, must_change_password) VALUES (?, ?, ?, ?, 1, 1)")
       .run(name, email, hashPassword(password), role);
     const row = findUserById(db, info.lastInsertRowid);
     res.status(201).json(publicUser(row));
@@ -687,7 +715,7 @@ app.post("/api/admin/people/:id/password", authMiddleware, requireAdmin, (req, r
   const password = String(req.body?.password || "");
   if (password.length < 8) return res.status(400).json({ error: "password_short" });
   db.prepare(
-    "UPDATE meet_users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?"
+    "UPDATE meet_users SET password_hash = ?, must_change_password = 1, updated_at = datetime('now') WHERE id = ?"
   ).run(hashPassword(password), id);
   res.json({ ok: true });
 });
