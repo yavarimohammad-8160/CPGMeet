@@ -33,7 +33,6 @@ export function clearSession() {
   localStorage.removeItem(USER_KEY);
 }
 
-
 const DEFAULT_TIMEOUT_MS = 60_000;
 const RETRY_BACKOFF_MS = [1000, 3000, 8000];
 const RETRY_STATUSES = new Set([502, 503, 504]);
@@ -83,7 +82,6 @@ export function wakeApi() {
     });
   return wakePromise;
 }
-
 
 export async function api(path, { method = "GET", body, token } = {}) {
   const headers = { Accept: "application/json" };
@@ -145,6 +143,7 @@ export async function uploadMeetingFile(meetingId, file, kind = "attachment") {
     const err = new Error(data?.error || `http_${res.status}`);
     err.status = res.status;
     err.data = data;
+    throw err;
   }
   return data;
 }
