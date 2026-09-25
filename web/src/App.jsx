@@ -1,10 +1,32 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import { API_BASE, api, clearSession, downloadIcs, getStoredUser, getToken, setSession, uploadMeetingFile, downloadMeetingFile } from "./api.js";
 
 import jalaali from "jalaali-js";
 
-const VIEWS = { week: "week", list: "list", form: "form", detail: "detail", admin: "admin" };
+const VIEWS = { week: "week", list: "list", form: "form", detail: "detail", admin: "admin", delegates: "delegates" };
+
+const NAV_ICON_PATHS = {
+  week: "M20 3h-1V1h-2v2H7V1H5v2H4c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 18H4V8h16v13zM6 10h3v3H6zm4.5 0h3v3h-3zm4.5 0h3v3h-3z",
+  list: "M17 10H7v2h10v-2zm2-7h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zm-5-5H7v2h7v-2z",
+  form: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 11h-4v4h-2v-4H7v-2h4V7h2v4h4v2z",
+  delegates: "M16.5 12c1.38 0 2.49-1.12 2.49-2.5S17.88 7 16.5 7C15.12 7 14 8.12 14 9.5s1.12 2.5 2.5 2.5zM9 11c1.66 0 2.99-1.34 2.99-3S10.66 5 9 5C7.34 5 6 6.34 6 8s1.34 3 3 3zm7.5 3c-1.83 0-5.5.92-5.5 2.75V19h11v-2.25c0-1.83-3.67-2.75-5.5-2.75zM9 13c-2.33 0-7 1.17-7 3.5V19h7v-2.25c0-.85.33-2.34 2.37-3.47C10.5 13.1 9.66 13 9 13z",
+  admin: "M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z",
+  bell: "M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z",
+  logout: "M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"
+};
+
+function NavIcon({ name }) {
+  return (
+    <svg className={`nav-icon nav-icon-${name}`} width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+      <path d={NAV_ICON_PATHS[name]} />
+    </svg>
+  );
+}
+
+function notifPermission() {
+  return typeof Notification !== "undefined" ? Notification.permission : "unsupported";
+}
 
 function startOfWeek(d) {
   const x = new Date(d);
@@ -743,8 +765,9 @@ function MeetingForm({ users, principals, currentUser, initial, onSave, onCancel
       <div className="compose-when">
         <div className="compose-when-row compose-jalali-row">
           <span className="compose-label">شروع</span>
+          <div className="compose-date-group">
           <select
-            className="compose-jalali-select"
+            className="compose-jalali-select compose-jalali-year"
             value={startJy}
             onChange={(e) => {
               const y = Number(e.target.value);
@@ -760,7 +783,7 @@ function MeetingForm({ users, principals, currentUser, initial, onSave, onCancel
             ))}
           </select>
           <select
-            className="compose-jalali-select"
+            className="compose-jalali-select compose-jalali-month"
             value={startJm}
             onChange={(e) => {
               const m = Number(e.target.value);
@@ -776,7 +799,7 @@ function MeetingForm({ users, principals, currentUser, initial, onSave, onCancel
             ))}
           </select>
           <select
-            className="compose-jalali-select"
+            className="compose-jalali-select compose-jalali-day"
             value={Math.min(startJd, startDayMax)}
             onChange={(e) => setStartJd(Number(e.target.value))}
             aria-label="روز شمسی شروع"
@@ -787,6 +810,8 @@ function MeetingForm({ users, principals, currentUser, initial, onSave, onCancel
               </option>
             ))}
           </select>
+          </div>
+          <div className="compose-time-group" dir="ltr">
           <select
             className="compose-time-select"
             value={startHour}
@@ -812,11 +837,13 @@ function MeetingForm({ users, principals, currentUser, initial, onSave, onCancel
               </option>
             ))}
           </select>
+          </div>
         </div>
         <div className="compose-when-row compose-jalali-row">
           <span className="compose-label">پایان</span>
+          <div className="compose-date-group">
           <select
-            className="compose-jalali-select"
+            className="compose-jalali-select compose-jalali-year"
             value={endJy}
             onChange={(e) => {
               const y = Number(e.target.value);
@@ -832,7 +859,7 @@ function MeetingForm({ users, principals, currentUser, initial, onSave, onCancel
             ))}
           </select>
           <select
-            className="compose-jalali-select"
+            className="compose-jalali-select compose-jalali-month"
             value={endJm}
             onChange={(e) => {
               const m = Number(e.target.value);
@@ -848,7 +875,7 @@ function MeetingForm({ users, principals, currentUser, initial, onSave, onCancel
             ))}
           </select>
           <select
-            className="compose-jalali-select"
+            className="compose-jalali-select compose-jalali-day"
             value={Math.min(endJd, endDayMax)}
             onChange={(e) => setEndJd(Number(e.target.value))}
             aria-label="روز شمسی پایان"
@@ -859,6 +886,8 @@ function MeetingForm({ users, principals, currentUser, initial, onSave, onCancel
               </option>
             ))}
           </select>
+          </div>
+          <div className="compose-time-group" dir="ltr">
           <select
             className="compose-time-select"
             value={endHour}
@@ -884,6 +913,7 @@ function MeetingForm({ users, principals, currentUser, initial, onSave, onCancel
               </option>
             ))}
           </select>
+          </div>
         </div>
         <div className="compose-when-links" aria-hidden="true">
           <span className="compose-muted-link is-disabled" title="به‌زودی">
@@ -892,6 +922,7 @@ function MeetingForm({ users, principals, currentUser, initial, onSave, onCancel
           <span className="compose-muted-link is-disabled" title="به‌زودی">
             تکرار
           </span>
+          <span className="compose-soon">به‌زودی</span>
         </div>
       </div>
 
@@ -1426,8 +1457,6 @@ function AdminDirectory({ busy, setBusy, onPeopleChanged, onBackToMeetings }) {
         </div>
       )}
 
-      <hr style={{ margin: "1.25rem 0" }} />
-      <h3>تفویض جلسه</h3>
     </div>
   );
 }
@@ -1572,6 +1601,12 @@ export default function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
+  const [notifPerm, setNotifPerm] = useState(() => notifPermission());
+  const mainRef = useRef(null);
+
+  useEffect(() => {
+    if (mainRef.current) mainRef.current.scrollTop = 0;
+  }, [view]);
 
   const selected = useMemo(
     () => meetings.find((m) => Number(m.id) === Number(selectedId)) || null,
@@ -1634,7 +1669,9 @@ export default function App() {
   useEffect(() => {
     if (!token) return;
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
-      Notification.requestPermission().catch(() => {});
+      Promise.resolve(Notification.requestPermission())
+        .catch(() => {})
+        .finally(() => setNotifPerm(notifPermission()));
     }
     const socket = io(API_BASE || "https://meet-api.cpg-pars.ir", {
 
@@ -1787,64 +1824,80 @@ export default function App() {
     );
   }
 
+  const isAdmin = isMeetAdminClient(user);
+  const navItems = [
+    { id: VIEWS.week, icon: "week", label: "هفته" },
+    { id: VIEWS.list, icon: "list", label: "جلسات من" },
+    { id: VIEWS.form, icon: "form", label: "جلسه جدید", onClick: () => setEditing(null) },
+    ...(isAdmin
+      ? [
+          { id: VIEWS.delegates, icon: "delegates", label: "تفویض جلسه" },
+          { id: VIEWS.admin, icon: "admin", label: "افراد و شرکت‌ها" }
+        ]
+      : [])
+  ];
+  const displayName = user.name || user.email || "";
+
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <img className="brand-logo" src="/icons/icon-64.png" alt="" width="40" height="40" />
+      <aside className="sidebar" aria-label="منوی اصلی">
+        <div className="brand" title="CPGMeet — جلسات سازمانی">
+          <img className="brand-logo" src="/icons/icon-64.png" alt="CPGMeet" width="40" height="40" />
           <div className="brand-text">
             <strong>CPGMeet</strong>
             <span>جلسات سازمانی</span>
           </div>
         </div>
-        <button
-          className={`nav-btn ${view === VIEWS.week ? "active" : ""}`}
-          onClick={() => setView(VIEWS.week)}
-        >
-          هفته
-        </button>
-        <button
-          className={`nav-btn ${view === VIEWS.list ? "active" : ""}`}
-          onClick={() => setView(VIEWS.list)}
-        >
-          جلسات من
-        </button>
-        <button
-          className={`nav-btn ${view === VIEWS.form ? "active" : ""}`}
-          onClick={() => {
-            setEditing(null);
-            setView(VIEWS.form);
-          }}
-        >
-          جلسه جدید
-        </button>
-        {isMeetAdminClient(user) ? (
-          <button
-            className={`nav-btn ${view === VIEWS.admin ? "active" : ""}`}
-            onClick={() => setView(VIEWS.admin)}
-          >
-            تفویض جلسه
-          </button>
-        ) : null}
+        <nav className="nav-list">
+          {navItems.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`nav-btn ${view === item.id ? "active" : ""}`}
+              aria-current={view === item.id ? "page" : undefined}
+              onClick={() => {
+                item.onClick?.();
+                setView(item.id);
+              }}
+            >
+              <NavIcon name={item.icon} />
+              <span className="nav-label">{item.label}</span>
+            </button>
+          ))}
+        </nav>
         <div className="spacer" />
-        <button
-          className="btn ghost"
-          type="button"
-          onClick={() => {
-            if (typeof Notification !== "undefined") Notification.requestPermission();
-          }}
-        >
-          اجازه نوتیف
-        </button>
-        <div className="user-chip">
-          {user.name || user.email}
-          <button className="btn ghost" style={{ marginTop: "0.5rem", width: "100%" }} onClick={logout}>
-            خروج
+        <div className="sidebar-foot">
+          {notifPerm === "default" ? (
+            <button
+              className="nav-btn nav-btn-notif"
+              type="button"
+              onClick={async () => {
+                try {
+                  await Notification.requestPermission();
+                } catch {
+                  /* ignore */
+                }
+                setNotifPerm(notifPermission());
+              }}
+            >
+              <NavIcon name="bell" />
+              <span className="nav-label">اجازه نوتیف</span>
+            </button>
+          ) : null}
+          <div className="user-chip" title={displayName}>
+            <span className="user-avatar" aria-hidden="true">
+              {displayName.trim().charAt(0) || "?"}
+            </span>
+            <span className="user-name">{displayName}</span>
+          </div>
+          <button className="nav-btn nav-btn-logout" type="button" onClick={logout}>
+            <NavIcon name="logout" />
+            <span className="nav-label">خروج</span>
           </button>
         </div>
       </aside>
 
-      <main className="main">
+      <main className="main" ref={mainRef}>
         {toast ? (
           <div className="panel" style={{ marginBottom: "1rem", background: "#ebf8ff" }}>
             {toast}
@@ -1858,14 +1911,14 @@ export default function App() {
         {view === VIEWS.week && (
           <div className="panel">
             <div className="week-nav">
-              <button className="btn secondary" onClick={() => setWeekAnchor(addDays(weekAnchor, -7))}>
+              <button className="btn secondary week-prev" onClick={() => setWeekAnchor(addDays(weekAnchor, -7))}>
                 هفته قبل
               </button>
-              <h2 style={{ margin: 0 }}>تقویم هفتگی</h2>
-              <button className="btn secondary" onClick={() => setWeekAnchor(addDays(weekAnchor, 7))}>
+              <h2 className="week-title" style={{ margin: 0 }}>تقویم هفتگی</h2>
+              <button className="btn secondary week-next" onClick={() => setWeekAnchor(addDays(weekAnchor, 7))}>
                 هفته بعد
               </button>
-              <button className="btn secondary" onClick={() => setWeekAnchor(startOfWeek(new Date()))}>
+              <button className="btn secondary week-today" onClick={() => setWeekAnchor(startOfWeek(new Date()))}>
                 امروز
               </button>
             </div>
@@ -1954,11 +2007,12 @@ export default function App() {
           />
         )}
 
-        {view === VIEWS.admin && isMeetAdminClient(user) ? (
-          <>
-            <AdminDirectory busy={busy} setBusy={setBusy} onPeopleChanged={() => loadUsers().catch(() => {})} onBackToMeetings={() => setView(VIEWS.week)} />
-            <DelegatesAdmin users={users} busy={busy} setBusy={setBusy} />
-          </>
+        {view === VIEWS.admin && isAdmin ? (
+          <AdminDirectory busy={busy} setBusy={setBusy} onPeopleChanged={() => loadUsers().catch(() => {})} onBackToMeetings={() => setView(VIEWS.week)} />
+        ) : null}
+
+        {view === VIEWS.delegates && isAdmin ? (
+          <DelegatesAdmin users={users} busy={busy} setBusy={setBusy} />
         ) : null}
 
         {view === VIEWS.detail && selected && (
