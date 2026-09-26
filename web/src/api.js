@@ -1,12 +1,31 @@
+/**
+ * API / Socket.IO base.
+ *
+ * Production front (meet.cpg-pars.ir, *.pages.dev) is served by Cloudflare
+ * Pages; its `_worker.js` proxies /api and /socket.io to Render. Render's
+ * 216.24.57.0/24 is blocked by several Iranian ISPs (Pishgaman, Irancell,
+ * Zitel, many office networks), so the browser must NEVER talk to the Render
+ * host directly — always same-origin, exactly like CPGChat.
+ */
+function isLocalDevHost(h) {
+  if (!h) return true;
+  if (h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1") return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  return false;
+}
+
 export const API_BASE = (() => {
-  const fromEnv = String(import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
-  if (fromEnv) return fromEnv;
-  if (typeof window !== "undefined") {
-    const host = String(window.location.hostname || "").toLowerCase();
-    if (host === "meet.cpg-pars.ir") return "https://meet-api.cpg-pars.ir";
-  }
-  return "";
+  const host = typeof window !== "undefined" ? String(window.location.hostname || "").toLowerCase() : "";
+  // Cloudflare-fronted hosts and local dev: always same-origin (ignore any build env).
+  if (host === "meet.cpg-pars.ir" || host.endsWith(".pages.dev") || isLocalDevHost(host)) return "";
+  return String(import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
 })();
+
+export function getApiBase() {
+  return API_BASE;
+}
 
 const TOKEN_KEY = "cpgmeet_token";
 const USER_KEY = "cpgmeet_user";
@@ -75,12 +94,66 @@ export function wakeApi() {
     method: "GET",
     headers: { Accept: "application/json" }
   }, { timeoutMs: 90_000, retries: 2 })
-    .then((r) => r.ok)
+    .then((r) => r.ok && isJsonResponse(r))
     .catch(() => false)
     .finally(() => {
       setTimeout(() => { wakePromise = null; }, 30_000);
     });
   return wakePromise;
+}
+
+function isJsonResponse(res) {
+  return String(res?.headers?.get?.("content-type") || "").toLowerCase().includes("application/json");
+}
+
+let apiReadyAt = 0;
+/** True if /api/health answered OK within the last few minutes. */
+export function apiRecentlyReady() {
+  return apiReadyAt > 0 && Date.now() - apiReadyAt < 5 * 60_000;
+}
+
+/**
+ * Wait for the API to answer /api/health, tolerating a Render free-tier cold
+ * start (~30-60s). Calls onWaking(true) once the first probe is slow/failed
+ * so the UI can show «در حال بیدار شدن سرور…» instead of an error.
+ * Resolves true when healthy, false after `maxMs`.
+ */
+export async function waitForApi({ maxMs = 120_000, onWaking } = {}) {
+  const started = Date.now();
+  let wakingShown = false;
+  const showWaking = () => {
+    if (!wakingShown) {
+      wakingShown = true;
+      try { onWaking?.(true); } catch { /* ignore */ }
+    }
+  };
+  const slowTimer = setTimeout(showWaking, 2500);
+  try {
+    while (Date.now() - started < maxMs) {
+      const ctrl = new AbortController();
+      const remaining = maxMs - (Date.now() - started);
+      const timer = setTimeout(() => ctrl.abort(), Math.max(1000, Math.min(45_000, remaining)));
+      try {
+        const res = await fetch(`${API_BASE}/api/health?_=${Date.now()}`, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          signal: ctrl.signal
+        });
+        clearTimeout(timer);
+        if (res.ok && isJsonResponse(res)) {
+          apiReadyAt = Date.now();
+          return true;
+        }
+      } catch {
+        clearTimeout(timer);
+      }
+      showWaking();
+      await sleep(3000);
+    }
+    return false;
+  } finally {
+    clearTimeout(slowTimer);
+  }
 }
 
 export async function api(path, { method = "GET", body, token } = {}) {

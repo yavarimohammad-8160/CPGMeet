@@ -173,6 +173,16 @@ h1, h2, h3 { margin: 0 0 0.75rem; color: var(--navy); }
   font-size: 0.9rem;
 }
 
+.info {
+  color: #1e3a5f;
+  background: #ebf4ff;
+  border: 1px solid #a3bffa;
+  padding: 0.6rem 0.75rem;
+  border-radius: 8px;
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+}
+
 .muted { color: var(--muted); font-size: 0.9rem; }
 
 .week-nav {

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
-import { API_BASE, api, clearSession, downloadIcs, getStoredUser, getToken, setSession, uploadMeetingFile, openMeetingFile, fileUrl, fileLinkExpired, isIOS } from "./api.js";
+import { API_BASE, api, waitForApi, clearSession, downloadIcs, getStoredUser, getToken, setSession, uploadMeetingFile, openMeetingFile, fileUrl, fileLinkExpired, isIOS } from "./api.js";
 
 import jalaali from "jalaali-js";
 
@@ -292,29 +292,67 @@ function ForcePasswordModal({ token, user, onDone }) {
   );
 }
 
+const SERVER_WAKING_MSG = "در حال بیدار شدن سرور… لطفاً چند لحظه صبر کنید.";
+const SERVER_DOWN_MSG = "سرور CPGMeet در دسترس نیست. لطفاً اتصال اینترنت خود را بررسی کرده و صفحه را مجدداً بارگذاری کنید.";
+
+function isServerUnreachableError(err) {
+  return (
+    err?.name === "AbortError" ||
+    err?.name === "TypeError" ||
+    err?.message === "Failed to fetch" ||
+    err?.status >= 500 ||
+    err?.data?.error === "bad_json"
+  );
+}
+
 function Login({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // "checking" | "waking" | "ok" | "down"
+  const [server, setServer] = useState("checking");
+
+  // Wake Render (free tier sleeps after ~15 min idle) while the user types.
+  useEffect(() => {
+    let alive = true;
+    waitForApi({ maxMs: 120_000, onWaking: () => alive && setServer((s) => (s === "ok" ? s : "waking")) })
+      .then((ok) => { if (alive) setServer(ok ? "ok" : "down"); });
+    return () => { alive = false; };
+  }, []);
+
+  async function doLogin() {
+    return api("/api/auth/login", {
+      method: "POST",
+      body: { email, password },
+      token: ""
+    });
+  }
 
   async function submit(e) {
     e.preventDefault();
     setBusy(true);
     setError("");
     try {
-      const data = await api("/api/auth/login", {
-        method: "POST",
-        body: { email, password },
-        token: ""
-      });
+      let data;
+      try {
+        data = await doLogin();
+      } catch (err) {
+        if (!isServerUnreachableError(err)) throw err;
+        // Probably a cold start: wait for the server instead of failing.
+        setServer("waking");
+        const ok = await waitForApi({ maxMs: 90_000 });
+        setServer(ok ? "ok" : "down");
+        if (!ok) throw err;
+        data = await doLogin();
+      }
       setSession(data.token, data.user);
       onLogin(data.user, data.token);
     } catch (err) {
       const msg =
 
-        err?.message === "Failed to fetch" || err?.status >= 500 || err?.data?.error === "bad_json"
-          ? "سرور CPGMeet در دسترس نیست. لطفاً اتصال اینترنت خود را بررسی کرده و صفحه را مجدداً بارگذاری کنید."
+        isServerUnreachableError(err)
+          ? SERVER_DOWN_MSG
           : err?.data?.error === "cpgchat_unreachable"
             ? "سرور CPGChat در دسترس نیست. ابتدا چت را روشن کنید."
             : err?.data?.error === "invalid_credentials" || err?.status === 401
@@ -332,6 +370,8 @@ function Login({ onLogin }) {
       <form className="login-card" onSubmit={submit}>
         <h1>CPGMeet</h1>
         <p className="muted">ورود با حساب CPGMeet</p>
+        {server === "waking" && !error ? <div className="info" role="status">{SERVER_WAKING_MSG}</div> : null}
+        {server === "down" && !error ? <div className="error">{SERVER_DOWN_MSG}</div> : null}
         {error ? <div className="error">{error}</div> : null}
         <label>ایمیل</label>
         <input
@@ -1707,10 +1747,25 @@ export default function App() {
 
   useEffect(() => {
     if (!token) return;
-    loadMeetings().catch((e) => setError(e.message));
-    loadUsers().catch(() => {});
-    loadCompaniesCatalog().catch(() => {});
-    loadPrincipals().catch(() => {});
+    let alive = true;
+    const loadAll = () => Promise.all([
+      loadMeetings(),
+      loadUsers().catch(() => {}),
+      loadCompaniesCatalog().catch(() => {}),
+      loadPrincipals().catch(() => {})
+    ]);
+    loadAll().catch(async (e) => {
+      if (!alive) return;
+      if (!isServerUnreachableError(e)) { setError(e.message); return; }
+      // Render cold start: show a waking notice, wait, then reload.
+      setError(SERVER_WAKING_MSG);
+      const ok = await waitForApi({ maxMs: 120_000 });
+      if (!alive) return;
+      if (!ok) { setError(SERVER_DOWN_MSG); return; }
+      setError("");
+      loadAll().catch((e2) => alive && setError(isServerUnreachableError(e2) ? SERVER_DOWN_MSG : e2.message));
+    });
+    return () => { alive = false; };
   }, [token, loadMeetings, loadUsers, loadCompaniesCatalog, loadPrincipals]);
 
   useEffect(() => {
@@ -1720,7 +1775,8 @@ export default function App() {
         .catch(() => {})
         .finally(() => setNotifPerm(notifPermission()));
     }
-    const socket = io(API_BASE || "https://meet-api.cpg-pars.ir", {
+    // Same-origin (Pages worker proxies /socket.io to Render); never Render directly.
+    const socket = io(API_BASE || window.location.origin, {
 
       path: "/socket.io",
       auth: { token },
