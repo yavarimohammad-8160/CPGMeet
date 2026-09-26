@@ -17,6 +17,15 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import multer from "multer";
+import jwt from "jsonwebtoken";
+import {
+  DB_STORAGE_PREFIX,
+  chunkCount,
+  countFileChunks,
+  deleteFileBytes,
+  putFileBytes,
+  streamFileBytes
+} from "./fileStore.js";
 
 const meetUsersSeed = ensureMeetUsers(db);
 if (meetUsersSeed.seededAdmin) {
@@ -80,13 +89,10 @@ const ALLOWED_MIME = new Set([
   "text/plain"
 ]);
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
-  filename: (_req, file, cb) => {
-    const safe = String(decodeMulterFilename(file.originalname) || "file").replace(/[^a-zA-Z0-9._\u0600-\u06FF-]+/g, "_").slice(0, 80);
-    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`);
-  }
-});
+// Files are kept in memory during upload, then stored durably in the DB (D1)
+// as chunks — Render's free-instance disk is wiped on every restart.
+const storage = multer.memoryStorage();
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 
 function decodeMulterFilename(name) {
@@ -103,16 +109,96 @@ function decodeMulterFilename(name) {
   }
 }
 
-function contentDispositionAttachment(filename) {
-  const fallback = String(filename || "file")
+function contentDisposition(filename, type = "attachment") {
+  const name = String(filename || "file").replace(/[\r\n]+/g, " ");
+  const extMatch = name.match(/\.[A-Za-z0-9]{1,8}$/);
+  const ext = extMatch ? extMatch[0] : "";
+  let stem = (ext ? name.slice(0, -ext.length) : name)
     .replace(/[^\x20-\x7E]+/g, "_")
-    .replace(/["\\]/g, "_") || "file";
-  const encoded = encodeURIComponent(String(filename || "file")).replace(/['()]/g, escape);
-  return 'attachment; filename="' + fallback + '"; filename*=UTF-8\'\'' + encoded;
+    .replace(/["\\;%]/g, "_")
+    .replace(/_+/g, "_")
+    .trim();
+  if (!/[A-Za-z0-9]/.test(stem)) stem = "file";
+  const fallback = stem + ext;
+  const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+  return `${type}; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
+const EXT_MIME = {
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  zip: "application/zip",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  txt: "text/plain; charset=utf-8"
+};
+const INLINE_MIME = new Set(["application/pdf", "image/jpeg", "image/png", "image/gif", "image/webp", "text/plain"]);
+
+function resolveMime(name, mime) {
+  const ext = String(name || "").toLowerCase().split(".").pop();
+  const m = String(mime || "").toLowerCase().split(";")[0].trim();
+  if (EXT_MIME[ext]) return EXT_MIME[ext];
+  if (ALLOWED_MIME.has(m)) return m === "text/plain" ? "text/plain; charset=utf-8" : m;
+  return "application/octet-stream";
+}
+
+const FILE_LINK_TTL_SEC = 6 * 60 * 60;
+function signFileToken(fileId, userId) {
+  return jwt.sign({ typ: "file", fid: Number(fileId), uid: Number(userId) }, SECRET, {
+    expiresIn: FILE_LINK_TTL_SEC
+  });
+}
+
+function isStoredInDb(file) {
+  return String(file?.path || "").startsWith(DB_STORAGE_PREFIX);
+}
+
+function legacyDiskPath(file) {
+  const p = String(file?.path || "");
+  if (!p || isStoredInDb(file)) return "";
+  return path.isAbsolute(p) ? p : path.join(paths.rootDir, p);
+}
+
+function fileAvailable(file) {
+  if (isStoredInDb(file)) return String(file.path) === `${DB_STORAGE_PREFIX}ok`;
+  const abs = legacyDiskPath(file);
+  return Boolean(abs && fs.existsSync(abs));
+}
+
+/** Public file shape + short-lived signed links (usable by plain <a href>, no auth header). */
+function presentFile(file, userId) {
+  const out = {
+    id: file.id,
+    meeting_id: file.meeting_id,
+    uploader_id: file.uploader_id,
+    name: file.name,
+    mime: file.mime,
+    size: file.size,
+    kind: file.kind,
+    created_at: file.created_at,
+    available: fileAvailable(file)
+  };
+  if (userId && out.available) {
+    const t = encodeURIComponent(signFileToken(file.id, userId));
+    out.download_url = `/api/files/${file.id}?t=${t}`;
+    out.view_url = INLINE_MIME.has(resolveMime(file.name, file.mime).split(";")[0])
+      ? `/api/files/${file.id}?t=${t}&inline=1`
+      : null;
+    out.link_expires_at = new Date(Date.now() + (FILE_LINK_TTL_SEC - 60) * 1000).toISOString();
+  }
+  return out;
 }
 const upload = multer({
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: MAX_FILE_BYTES },
   fileFilter: (_req, file, cb) => {
     const mime = String(file.mimetype || "");
     const name = String(file.originalname || "").toLowerCase();
@@ -122,13 +208,15 @@ const upload = multer({
   }
 });
 
-function listMeetingFiles(meetingId) {
+function listMeetingFiles(meetingId, userId) {
   return db
     .prepare(
-      `SELECT id, meeting_id, uploader_id, name, mime, size, kind, created_at
-       FROM meeting_files WHERE meeting_id = ? ORDER BY created_at DESC, id DESC`
+      `SELECT id, meeting_id, uploader_id, name, mime, size, path, kind, created_at
+       FROM meeting_files WHERE meeting_id = ? AND path != 'db:pending'
+       ORDER BY created_at DESC, id DESC`
     )
-    .all(Number(meetingId));
+    .all(Number(meetingId))
+    .map((f) => presentFile(f, userId));
 }
 
 function getMeetingFile(id) {
@@ -146,7 +234,7 @@ const allowedOrigins = [...new Set([
 ])];
 
 const app = express();
-app.use(cors({ origin: allowedOrigins, credentials: true }));
+app.use(cors({ origin: allowedOrigins, credentials: true, exposedHeaders: ["Content-Disposition", "Content-Length"] }));
 app.use(express.json({ limit: "1mb" }));
 
 const server = http.createServer(app);
@@ -930,7 +1018,7 @@ app.get("/api/meetings/:id", authMiddleware, (req, res) => {
       ...meeting,
       can_cancel: canCancelMeeting(meeting, req.user.id),
       can_manage: canManageMeeting(meeting, req.user.id),
-      files: listMeetingFiles(meeting.id)
+      files: listMeetingFiles(meeting.id, req.user.id)
     }
   });
 });
@@ -1073,7 +1161,7 @@ app.get("/api/meetings/:id/files", authMiddleware, (req, res) => {
   if (!meeting || !userCanSee(meeting, req.user.id)) {
     return res.status(404).json({ error: "not_found" });
   }
-  res.json({ files: listMeetingFiles(meeting.id) });
+  res.json({ files: listMeetingFiles(meeting.id, req.user.id) });
 });
 
 app.post(
@@ -1089,60 +1177,118 @@ app.post(
       next();
     });
   },
-  (req, res) => {
+  async (req, res) => {
     const meeting = getMeeting(req.params.id);
     if (!meeting || !userCanSee(meeting, req.user.id)) {
-      if (req.file?.path) try { fs.unlinkSync(req.file.path); } catch {}
       return res.status(404).json({ error: "not_found" });
     }
-    if (!req.file) return res.status(400).json({ error: "missing_file" });
+    if (!req.file || !req.file.buffer) return res.status(400).json({ error: "missing_file" });
     let kind = String(req.query?.kind || req.body?.kind || "attachment").toLowerCase();
     if (kind !== "minutes") kind = "attachment";
-    const rel = path.relative(paths.rootDir, req.file.path).replace(/\\/g, "/");
-    const result = db
-      .prepare(
-        `INSERT INTO meeting_files (meeting_id, uploader_id, name, mime, size, path, kind, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`
-      )
-      .run(
-        meeting.id,
-        Number(req.user.id),
-        decodeMulterFilename(req.file.originalname) || req.file.filename,
-        req.file.mimetype || null,
-        Number(req.file.size || 0),
-        rel,
-        kind
-      );
-    const file = getMeetingFile(result.lastInsertRowid);
-    res.status(201).json({
-      file: {
-        id: file.id,
-        meeting_id: file.meeting_id,
-        uploader_id: file.uploader_id,
-        name: file.name,
-        mime: file.mime,
-        size: file.size,
-        kind: file.kind,
-        created_at: file.created_at
+    const name = decodeMulterFilename(req.file.originalname) || "file";
+    const mime = resolveMime(name, req.file.mimetype).split(";")[0];
+    let fileId = 0;
+    try {
+      const result = db
+        .prepare(
+          `INSERT INTO meeting_files (meeting_id, uploader_id, name, mime, size, path, kind, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+        )
+        .run(meeting.id, Number(req.user.id), name, mime, Number(req.file.buffer.length), "db:pending", kind);
+      fileId = Number(result.lastInsertRowid);
+      await putFileBytes(fileId, req.file.buffer);
+      db.prepare("UPDATE meeting_files SET path = ? WHERE id = ?").run(`${DB_STORAGE_PREFIX}ok`, fileId);
+    } catch (err) {
+      console.error("[CPGMeet] upload store failed", fileId, err?.message || err);
+      if (fileId) {
+        try { await deleteFileBytes(fileId); } catch {}
+        try { db.prepare("DELETE FROM meeting_files WHERE id = ?").run(fileId); } catch {}
       }
-    });
+      return res.status(500).json({ error: "store_failed" });
+    }
+    const file = getMeetingFile(fileId);
+    res.status(201).json({ file: presentFile(file, req.user.id) });
   }
 );
 
-app.get("/api/files/:id", authMiddleware, (req, res) => {
+/** Auth for file download: Authorization Bearer header OR signed ?t= link token. */
+function fileAuth(req, res, next) {
+  const q = typeof req.query?.t === "string" ? req.query.t : "";
+  if (q) {
+    try {
+      const payload = jwt.verify(q, SECRET);
+      if (payload?.typ !== "file" || Number(payload.fid) !== Number(req.params.id)) {
+        return res.status(403).json({ error: "bad_link" });
+      }
+      req.user = { id: Number(payload.uid) };
+      return next();
+    } catch {
+      return res.status(401).json({ error: "link_expired" });
+    }
+  }
+  return authMiddleware(req, res, next);
+}
+
+/** Fresh signed links (used when the list's links have expired). */
+app.get("/api/files/:id/link", authMiddleware, (req, res) => {
+  const file = getMeetingFile(req.params.id);
+  if (!file) return res.status(404).json({ error: "not_found" });
+  const meeting = getMeeting(file.meeting_id);
+  if (!meeting || !userCanSee(meeting, req.user.id)) return res.status(403).json({ error: "forbidden" });
+  const out = presentFile(file, req.user.id);
+  if (!out.available) return res.status(410).json({ error: "file_lost" });
+  res.json({ file: out });
+});
+
+app.get("/api/files/:id", fileAuth, async (req, res) => {
   const file = getMeetingFile(req.params.id);
   if (!file) return res.status(404).json({ error: "not_found" });
   const meeting = getMeeting(file.meeting_id);
   if (!meeting || !userCanSee(meeting, req.user.id)) {
     return res.status(403).json({ error: "forbidden" });
   }
-  const abs = path.isAbsolute(file.path) ? file.path : path.join(paths.rootDir, file.path);
-  if (!fs.existsSync(abs)) return res.status(404).json({ error: "missing_on_disk" });
-  res.setHeader("Content-Disposition", contentDispositionAttachment(file.name));
-  res.sendFile(abs);
+  const type = resolveMime(file.name, file.mime);
+  const inline = String(req.query?.inline || "") === "1" && INLINE_MIME.has(type.split(";")[0]);
+  const setHeaders = (length) => {
+    res.setHeader("Content-Type", type);
+    res.setHeader("Content-Disposition", contentDisposition(file.name, inline ? "inline" : "attachment"));
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Cache-Control", "private, no-store");
+    if (type.startsWith("text/")) res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+    if (length != null) res.setHeader("Content-Length", String(length));
+  };
+
+  if (!isStoredInDb(file)) {
+    const abs = legacyDiskPath(file);
+    if (!abs || !fs.existsSync(abs)) return res.status(410).json({ error: "file_lost" });
+    setHeaders(fs.statSync(abs).size);
+    return fs.createReadStream(abs).pipe(res);
+  }
+  if (String(file.path) !== `${DB_STORAGE_PREFIX}ok`) return res.status(409).json({ error: "upload_incomplete" });
+
+  const n = chunkCount(file.size);
+  try {
+    const have = await countFileChunks(file.id);
+    if (have !== n) {
+      console.error("[CPGMeet] file chunks missing", file.id, have, n);
+      return res.status(410).json({ error: "file_lost" });
+    }
+  } catch (err) {
+    console.error("[CPGMeet] file lookup failed", file.id, err?.message || err);
+    return res.status(503).json({ error: "storage_unavailable" });
+  }
+  setHeaders(Number(file.size || 0));
+  if (req.method === "HEAD") return res.end();
+  try {
+    await streamFileBytes(file.id, n, res);
+    res.end();
+  } catch (err) {
+    console.error("[CPGMeet] file stream failed", file.id, err?.message || err);
+    res.destroy(err);
+  }
 });
 
-app.delete("/api/files/:id", authMiddleware, (req, res) => {
+app.delete("/api/files/:id", authMiddleware, async (req, res) => {
   const file = getMeetingFile(req.params.id);
   if (!file) return res.status(404).json({ error: "not_found" });
   const meeting = getMeeting(file.meeting_id);
@@ -1151,9 +1297,13 @@ app.delete("/api/files/:id", authMiddleware, (req, res) => {
   if (Number(file.uploader_id) !== uid && !canManageMeeting(meeting, uid)) {
     return res.status(403).json({ error: "forbidden" });
   }
-  const abs = path.isAbsolute(file.path) ? file.path : path.join(paths.rootDir, file.path);
   db.prepare("DELETE FROM meeting_files WHERE id = ?").run(file.id);
-  try { if (fs.existsSync(abs)) fs.unlinkSync(abs); } catch {}
+  if (isStoredInDb(file)) {
+    try { await deleteFileBytes(file.id); } catch (err) { console.error("[CPGMeet] chunk delete failed", file.id, err?.message); }
+  } else {
+    const abs = legacyDiskPath(file);
+    try { if (abs && fs.existsSync(abs)) fs.unlinkSync(abs); } catch {}
+  }
   res.json({ ok: true });
 });
 

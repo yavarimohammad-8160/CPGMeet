@@ -1480,3 +1480,23 @@ body {
   .list-filters { gap: 0.35rem; margin: 0.5rem 0 0.85rem; }
   .chip-filter { padding: 0.3rem 0.7rem; font-size: 0.85rem; }
 }
+
+/* Attachment download links (signed URLs) */
+a.file-card-main,
+a.file-card-main:visited {
+  text-decoration: none;
+  color: inherit;
+  -webkit-tap-highlight-color: rgba(15, 108, 189, 0.12);
+}
+.file-card-view {
+  flex-shrink: 0;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.file-card-lost .file-card-main {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.file-card-lost .file-card-size {
+  color: #b42318;
+}

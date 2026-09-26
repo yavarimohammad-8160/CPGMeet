@@ -119,8 +119,10 @@ export async function downloadIcs(meetingId) {
   const a = document.createElement("a");
   a.href = url;
   a.download = `meeting-${meetingId}.ics`;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 export async function uploadMeetingFile(meetingId, file, kind = "attachment") {
@@ -148,16 +150,56 @@ export async function uploadMeetingFile(meetingId, file, kind = "attachment") {
   return data;
 }
 
-export async function downloadMeetingFile(fileId, name) {
-  const res = await fetch(`${API_BASE}/api/files/${fileId}`, {
-    headers: { Authorization: `Bearer ${getToken()}` }
-  });
-  if (!res.ok) throw new Error("download_failed");
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name || `file-${fileId}`;
-  a.click();
-  URL.revokeObjectURL(url);
+/** iPhone / iPad (incl. iPadOS that reports as Mac). */
+export function isIOS() {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+export function isStandalonePwa() {
+  if (typeof window === "undefined") return false;
+  return Boolean(window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone);
+}
+
+/** Absolute URL for a server-relative signed file link (/api/files/:id?t=...). */
+export function fileUrl(rel) {
+  if (!rel) return "";
+  return /^https?:/i.test(rel) ? rel : `${API_BASE}${rel}`;
+}
+
+export function fileLinkExpired(file) {
+  if (!file?.download_url) return true;
+  const exp = Date.parse(file.link_expires_at || "");
+  return !Number.isFinite(exp) || Date.now() > exp;
+}
+
+/** Fetch fresh signed links for a file (list links expire after a few hours). */
+export async function freshFileLinks(fileId) {
+  const data = await api(`/api/files/${fileId}/link`);
+  return data.file;
+}
+
+/**
+ * Open/download a meeting file via its signed URL. The server sends
+ * Content-Disposition (attachment or inline) with an RFC 5987 Persian filename,
+ * so a plain navigation works everywhere: iOS Safari/PWA shows its download /
+ * Quick Look sheet, Android Chrome + desktop save the file.
+ * `preOpened` is a window opened synchronously in the click handler (iOS
+ * blocks window.open after an await).
+ */
+export async function openMeetingFile(file, { inline = false, preOpened = null } = {}) {
+  let f = file;
+  if (fileLinkExpired(f)) f = await freshFileLinks(file.id);
+  const url = fileUrl(inline ? f.view_url || f.download_url : f.download_url);
+  if (!url) throw new Error("file_lost");
+  if (preOpened && !preOpened.closed) {
+    preOpened.location.href = url;
+  } else if (inline || isIOS()) {
+    const w = window.open(url, "_blank", "noopener");
+    if (!w) window.location.href = url;
+  } else {
+    window.location.href = url;
+  }
+  return f;
 }

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
-import { API_BASE, api, clearSession, downloadIcs, getStoredUser, getToken, setSession, uploadMeetingFile, downloadMeetingFile } from "./api.js";
+import { API_BASE, api, clearSession, downloadIcs, getStoredUser, getToken, setSession, uploadMeetingFile, openMeetingFile, fileUrl, fileLinkExpired, isIOS } from "./api.js";
 
 import jalaali from "jalaali-js";
 
@@ -1049,7 +1049,7 @@ function MeetingForm({ users, principals, currentUser, initial, onSave, onCancel
               ))}
             </ul>
           ) : (
-            <p className="muted">فایل‌های پیوست پس از ذخیره آپلود می‌شوند (حداکثر ۵۰ مگابایت).</p>
+            <p className="muted">فایل‌های پیوست پس از ذخیره آپلود می‌شوند (حداکثر ۲۵ مگابایت).</p>
           )}
         </div>
       </div>
@@ -1095,7 +1095,13 @@ function MeetingFilesSection({ meeting, user, canManage, onChanged }) {
       await refresh();
       onChanged?.();
     } catch (err) {
-      setError(err?.data?.error || err.message || "خطا در آپلود");
+      const code = String(err?.data?.error || err?.message || "");
+      setError(
+        /too large/i.test(code) ? "حجم فایل بیش از ۲۵ مگابایت است."
+          : code === "unsupported_file_type" ? "نوع فایل پشتیبانی نمی‌شود."
+          : code === "store_failed" ? "ذخیره فایل انجام نشد؛ لطفاً دوباره تلاش کنید."
+          : code || "خطا در آپلود"
+      );
     } finally {
       setBusy(false);
     }
@@ -1112,6 +1118,29 @@ function MeetingFilesSection({ meeting, user, canManage, onChanged }) {
       setError(err?.data?.error || err.message || "خطا");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function onOpenFile(e, f, inline) {
+    setError("");
+    if (f.available === false) {
+      e.preventDefault();
+      setError("این فایل روی سرور موجود نیست (پیش از رفع مشکل ذخیره‌سازی بارگذاری شده). لطفاً دوباره بارگذاری کنید.");
+      return;
+    }
+    // Fresh link needed: open a window synchronously (iOS blocks popups after await).
+    if (!fileLinkExpired(f)) return; // let the <a href> navigate natively
+    e.preventDefault();
+    const pre = inline || isIOS() ? window.open("", "_blank") : null;
+    try {
+      const fresh = await openMeetingFile(f, { inline, preOpened: pre });
+      setFiles((prev) => prev.map((x) => (x.id === fresh.id ? { ...x, ...fresh } : x)));
+    } catch (err) {
+      try { pre?.close(); } catch {}
+      const code = err?.data?.error || err?.message || "";
+      setError(code === "file_lost"
+        ? "این فایل روی سرور موجود نیست. لطفاً دوباره بارگذاری کنید."
+        : "دانلود فایل انجام نشد. لطفاً دوباره تلاش کنید.");
     }
   }
 
@@ -1156,21 +1185,39 @@ function FileList({ items, title }) {
               const shown = displayFileName(f.name);
               const cover = fileCoverMeta(shown, f.mime);
               return (
-                <li key={f.id} className="file-card">
-                  <button
-                    type="button"
+                <li key={f.id} className={`file-card${f.available === false ? " file-card-lost" : ""}`}>
+                  <a
                     className="file-card-main"
-                    onClick={() => downloadMeetingFile(f.id, shown)}
+                    href={f.available === false ? undefined : fileUrl(f.download_url) || undefined}
+                    target={isIOS() ? "_blank" : undefined}
+                    rel="noopener"
+                    onClick={(e) => onOpenFile(e, f, false)}
                     title={shown}
+                    role="button"
                   >
                     <span className={`file-cover file-cover-${cover.cls}`} aria-hidden="true">
                       <span className="file-cover-label">{cover.label}</span>
                     </span>
                     <span className="file-card-meta">
                       <span className="file-card-name">{shown}</span>
-                      <span className="muted file-card-size">{toFaDigits(Math.round((f.size || 0) / 1024))} کیلوبایت</span>
+                      <span className="muted file-card-size">
+                        {f.available === false
+                          ? "فایل روی سرور موجود نیست — لطفاً دوباره بارگذاری کنید"
+                          : `${toFaDigits(Math.round((f.size || 0) / 1024))} کیلوبایت · دانلود`}
+                      </span>
                     </span>
-                  </button>
+                  </a>
+                  {f.available !== false && f.view_url ? (
+                    <a
+                      className="btn ghost file-card-view"
+                      href={fileUrl(f.view_url)}
+                      target="_blank"
+                      rel="noopener"
+                      onClick={(e) => onOpenFile(e, f, true)}
+                    >
+                      مشاهده
+                    </a>
+                  ) : null}
                   {Number(f.uploader_id) === Number(user.id) || canManage ? (
                     <button type="button" className="btn ghost file-card-delete" disabled={busy} onClick={() => onDelete(f.id)}>
                       حذف

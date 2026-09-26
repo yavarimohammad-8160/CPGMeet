@@ -174,6 +174,8 @@ if (useD1) {
 
 export { db };
 export const paths = { dbPath, rootDir };
+/** D1 HTTP config when D1 is active (used by async file-chunk store), else null. */
+export const d1Config = useD1 ? { accountId, apiToken, databaseId: d1DatabaseId } : null;
 export function flushDb() {
   return flushDbImpl();
 }
@@ -294,5 +296,18 @@ CREATE TABLE IF NOT EXISTS meeting_files (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_files_meeting ON meeting_files(meeting_id);
+`);
+})();
+
+// Additive: durable attachment bytes (base64 chunks) — Render free disk is wiped on
+// every restart/spin-down, so file bytes live in the DB (D1 in production).
+(function migrateMeetingFileChunks() {
+  db.exec(`
+CREATE TABLE IF NOT EXISTS meeting_file_chunks (
+  file_id INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  data TEXT NOT NULL,
+  PRIMARY KEY (file_id, seq)
+);
 `);
 })();
