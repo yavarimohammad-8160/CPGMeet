@@ -7,21 +7,12 @@
  * Zitel, many office networks), so the browser must NEVER talk to the Render
  * host directly — always same-origin, exactly like CPGChat.
  */
-function isLocalDevHost(h) {
-  if (!h) return true;
-  if (h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1") return true;
-  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
-  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
-  if (/^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
-  return false;
-}
-
-export const API_BASE = (() => {
-  const host = typeof window !== "undefined" ? String(window.location.hostname || "").toLowerCase() : "";
-  // Cloudflare-fronted hosts and local dev: always same-origin (ignore any build env).
-  if (host === "meet.cpg-pars.ir" || host.endsWith(".pages.dev") || isLocalDevHost(host)) return "";
-  return String(import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
-})();
+// Always same-origin. Note: the Pages project has a stale VITE_API_URL env var
+// pointing at the Render host; it is intentionally ignored. The web bundle is
+// only served from meet.cpg-pars.ir (Pages worker proxy), *.pages.dev, the
+// Render server itself (serves web/dist), or local Vite (proxy) — all
+// same-origin for /api and /socket.io.
+export const API_BASE = "";
 
 export function getApiBase() {
   return API_BASE;
