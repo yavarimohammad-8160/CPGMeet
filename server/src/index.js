@@ -37,7 +37,7 @@ if (meetUsersSeed.seededPeopleCount) {
 
 
 const PORT = Number(process.env.PORT || 8788);
-const HOST = '0.0.0.0';
+const HOST = process.env.HOST || "0.0.0.0";
 const CPGCHAT_API_URL = (process.env.CPGCHAT_API_URL || "http://127.0.0.1:8787").replace(/\/$/, "");
 const CPGMEET_NOTIFY_SECRET = process.env.CPGMEET_NOTIFY_SECRET || "cpgmeet-notify-pilot";
 const CPGMEET_WEB_URL = (process.env.CPGMEET_WEB_URL || "https://meet.cpg-pars.ir").replace(/\/$/, "");
@@ -223,19 +223,42 @@ function getMeetingFile(id) {
   return db.prepare("SELECT * FROM meeting_files WHERE id = ?").get(Number(id));
 }
 
+function splitOrigins(value) {
+  return String(value || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter((origin) => origin && origin !== "*");
+}
+
 const allowedOrigins = [...new Set([
   "https://meet.cpg-pars.ir",
   "https://chat.cpg-pars.ir",
-  ...(process.env.CORS_ORIGIN || "").split(",").map((origin) => origin.trim()).filter(Boolean),
+  ...splitOrigins(process.env.CORS_ORIGIN),
+  ...splitOrigins(process.env.CORS_ORIGINS),
+  ...splitOrigins(process.env.WEB_ORIGIN),
   "http://localhost:5173",
   "http://localhost:5174",
   "http://127.0.0.1:5173",
   "http://127.0.0.1:5174"
 ])];
 
+function stripLeak(res, body) {
+  if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.message !== "string") return body;
+  const status = res.statusCode || 200;
+  const leak = status >= 500 || /sqlite|syntax error|\bselect\b|\binsert\b|password_hash|\/opt\/|\/var\/|\bat\s+\S+:\d+/i.test(body.message);
+  if (!leak) return body;
+  const { message, ...rest } = body;
+  return rest;
+}
+
 const app = express();
 app.use(cors({ origin: allowedOrigins, credentials: true, exposedHeaders: ["Content-Disposition", "Content-Length"] }));
 app.use(express.json({ limit: "1mb" }));
+app.use((_req, res, next) => {
+  const sendJson = res.json.bind(res);
+  res.json = (body) => sendJson(stripLeak(res, body));
+  next();
+});
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -620,14 +643,7 @@ app.get("/api/locations", authMiddleware, (_req, res) => {
 });
 
 app.get("/api/health", (_req, res) => {
-  res.json({
-    ok: true,
-    name: "CPGMeet",
-    db: paths.dbPath,
-    cpgchat: CPGCHAT_API_URL,
-    notify: `${CPGCHAT_API_URL}/api/internal/cpgmeet/notify`,
-    web: CPGMEET_WEB_URL
-  });
+  res.json({ ok: true, name: "CPGMeet" });
 });
 
 app.post("/api/auth/login", (req, res) => {
