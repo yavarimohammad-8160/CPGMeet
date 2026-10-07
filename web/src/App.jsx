@@ -295,6 +295,25 @@ function ForcePasswordModal({ token, user, onDone }) {
 const SERVER_WAKING_MSG = "در حال بیدار شدن سرور… لطفاً چند لحظه صبر کنید.";
 const SERVER_DOWN_MSG = "سرور CPGMeet در دسترس نیست. لطفاً اتصال اینترنت خود را بررسی کرده و صفحه را مجدداً بارگذاری کنید.";
 
+const SERVER_ERROR_MSG = "خطای سرور CPGMeet. کمی بعد دوباره تلاش کنید.";
+
+/** True only when no HTTP response arrived (offline, DNS, TLS, timeout). */
+function isNetworkError(err) {
+  return (
+    err?.name === "AbortError" ||
+    err?.name === "TypeError" ||
+    err?.message === "Failed to fetch"
+  ) && !(err?.status > 0);
+}
+
+/** Connectivity text only for real network failures; 5xx gets a server message with its status. */
+function unreachableMessage(err) {
+  if (isNetworkError(err)) return SERVER_DOWN_MSG;
+  if (err?.status >= 500) return `${SERVER_ERROR_MSG} (${err.status})`;
+  return SERVER_DOWN_MSG;
+}
+
+/** Used to decide whether to wait for the server and retry (network or 5xx). */
 function isServerUnreachableError(err) {
   return (
     err?.name === "AbortError" ||
@@ -352,7 +371,7 @@ function Login({ onLogin }) {
       const msg =
 
         isServerUnreachableError(err)
-          ? SERVER_DOWN_MSG
+          ? unreachableMessage(err)
           : err?.data?.error === "cpgchat_unreachable"
             ? "سرور CPGChat در دسترس نیست. ابتدا چت را روشن کنید."
             : err?.data?.error === "invalid_credentials" || err?.status === 401
@@ -1761,9 +1780,9 @@ export default function App() {
       setError(SERVER_WAKING_MSG);
       const ok = await waitForApi({ maxMs: 120_000 });
       if (!alive) return;
-      if (!ok) { setError(SERVER_DOWN_MSG); return; }
+      if (!ok) { setError(unreachableMessage(e)); return; }
       setError("");
-      loadAll().catch((e2) => alive && setError(isServerUnreachableError(e2) ? SERVER_DOWN_MSG : e2.message));
+      loadAll().catch((e2) => alive && setError(isServerUnreachableError(e2) ? unreachableMessage(e2) : e2.message));
     });
     return () => { alive = false; };
   }, [token, loadMeetings, loadUsers, loadCompaniesCatalog, loadPrincipals]);
