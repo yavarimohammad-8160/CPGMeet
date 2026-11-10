@@ -60,13 +60,17 @@ CREATE INDEX IF NOT EXISTS idx_meet_users_email ON meet_users(email);
   const adminEmail = "m.yavari@cpg-pars.com";
   const admin = db.prepare("SELECT id, role FROM meet_users WHERE lower(email) = ?").get(adminEmail);
   if (!admin) {
-    const adminPassword = process.env.MEET_ADMIN_PASSWORD || "MeetAdmin1405!";
-    const hash = hashPassword(adminPassword);
-    db.prepare(
-      `INSERT INTO meet_users (name, email, password_hash, role, active, must_change_password)
-       VALUES (?, ?, ?, 'admin', 1, 0)`
-    ).run("محمد یاوری", adminEmail, hash);
-    seededAdmin = true;
+    const adminPassword = process.env.MEET_ADMIN_PASSWORD;
+    if (!adminPassword) {
+      console.warn("[CPGMeet] admin missing and MEET_ADMIN_PASSWORD unset; not seeding a default password");
+    } else {
+      const hash = hashPassword(adminPassword);
+      db.prepare(
+        `INSERT INTO meet_users (name, email, password_hash, role, active, must_change_password)
+         VALUES (?, ?, ?, 'admin', 1, 0)`
+      ).run("محمد یاوری", adminEmail, hash);
+      seededAdmin = true;
+    }
   } else if (String(admin.role) !== "admin") {
     db.prepare("UPDATE meet_users SET role = 'admin', updated_at = datetime('now') WHERE id = ?").run(admin.id);
   }
@@ -82,7 +86,10 @@ CREATE INDEX IF NOT EXISTS idx_meet_users_email ON meet_users(email);
       people = [];
     }
     if (Array.isArray(people)) {
-      const userPassword = process.env.MEET_USER_TEMP_PASSWORD || "ChangeMe1405!";
+      const userPassword = process.env.MEET_USER_TEMP_PASSWORD;
+      if (!userPassword) {
+        console.warn("[CPGMeet] MEET_USER_TEMP_PASSWORD unset; not seeding people with a default password");
+      }
       const insert = db.prepare(
         `INSERT INTO meet_users (name, email, password_hash, role, active, must_change_password)
          VALUES (?, ?, ?, 'user', 1, 0)`
@@ -93,7 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_meet_users_email ON meet_users(email);
         const name = String(entry?.name || "").trim();
         if (!email || !name) continue;
         const existing = find.get(email);
-        if (existing) continue;
+        if (existing || !userPassword) continue;
         insert.run(name, email, hashPassword(userPassword));
         seededPeopleCount += 1;
       }
